@@ -22,6 +22,8 @@ pip install .
 
 ## Quick Start
 
+### Using Individual Parameters
+
 ```python
 import asyncio
 from cresnextws import CresNextWSClient
@@ -44,14 +46,48 @@ async def main():
 asyncio.run(main())
 ```
 
+### Using Configuration Object
+
+```python
+import asyncio
+from cresnextws import CresNextWSClient, ClientConfig
+
+async def main():
+    # Create configuration
+    config = ClientConfig(
+        host="your-cresnext-host.local",
+        port=443,
+        ssl=True,
+        auto_reconnect=True  # Enable automatic reconnection
+    )
+    
+    # Create client instance with config
+    client = CresNextWSClient(config)
+    
+    # Connect to the system
+    await client.connect(username="your_username", password="your_password")
+    
+    # Send a command
+    response = await client.send_command("get_status")
+    print(f"Response: {response}")
+    
+    # Disconnect when done
+    await client.disconnect()
+
+# Run the example
+asyncio.run(main())
+```
+
 ## Using Context Manager
 
 ```python
 import asyncio
-from cresnextws import CresNextWSClient
+from cresnextws import CresNextWSClient, ClientConfig
 
 async def main():
-    async with CresNextWSClient(host="your-cresnext-host.local") as client:
+    # Using configuration object
+    config = ClientConfig(host="your-cresnext-host.local", auto_reconnect=True)
+    async with CresNextWSClient(config) as client:
         response = await client.send_command("get_status")
         print(f"Response: {response}")
 
