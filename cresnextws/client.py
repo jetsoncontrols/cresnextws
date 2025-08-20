@@ -51,8 +51,7 @@ class CresNextWSClient:
         # TODO: Implement WebSocket connection logic
         logger.info(f"Connecting to CresNext at {self.host}:{self.port}")
         
-        # Placeholder implementation
-        self._connected = True
+        # self._connected = True
         return self._connected
     
     async def disconnect(self) -> None:
@@ -62,7 +61,7 @@ class CresNextWSClient:
         if self._connected:
             logger.info("Disconnecting from CresNext")
             # TODO: Implement disconnection logic
-            self._connected = False
+            # self._connected = False
     
     @property
     def connected(self) -> bool:
