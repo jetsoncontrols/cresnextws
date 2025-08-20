@@ -100,10 +100,6 @@ mypy cresnextws/
 - websockets>=11.0
 - aiohttp>=3.8.0
 
-## License
-
-This project is licensed under the MIT License.
-
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
