@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, Type
 import aiohttp
 import websockets
 from dataclasses import dataclass
+import ssl
 
 
 logger = logging.getLogger(__name__)
@@ -28,12 +29,14 @@ class ClientConfig:
         host (str): The hostname or IP address of the CresNext system
         port (int): The port number (default: 443)
         ssl (bool): Whether to use SSL/TLS (default: True)
+        ignore_self_signed (bool): If True, don't verify TLS certificates
+            (useful for self-signed certs; default: True)
         auto_reconnect (bool): Whether to automatically reconnect on
             connection loss (default: False)
-        auth_url (str): URL for REST authentication endpoint
-            (default: placeholder)
-        websocket_url (str): URL for WebSocket endpoint
-            (default: placeholder)
+        auth_path (str): Path for REST authentication endpoint
+            (default: "/userlogin.html")
+        websocket_path (str): Path for WebSocket endpoint
+            (default: "/websockify")
         ping_interval (float): Interval in seconds for WebSocket ping
             (default: 30.0)
         reconnect_delay (float): Delay in seconds before reconnection attempt
@@ -43,9 +46,10 @@ class ClientConfig:
     host: str
     port: int = 443
     ssl: bool = True
+    ignore_self_signed: bool = True
     auto_reconnect: bool = False
-    auth_url: str = "/api/auth/login"  # Placeholder REST endpoint
-    websocket_url: str = "/api/ws"  # Placeholder WebSocket endpoint
+    auth_path: str = "/userlogin.html"  # REST auth path
+    websocket_path: str = "/websockify"  # WebSocket path
     ping_interval: float = 30.0  # Ping every 30 seconds
     reconnect_delay: float = 5.0  # Wait 5 seconds before reconnect
 
@@ -60,48 +64,15 @@ class CresNextWSClient:
 
     def __init__(
         self,
-        config: Optional[ClientConfig] = None,
-        *,
-        host: Optional[str] = None,
-        port: int = 443,
-        ssl: bool = True,
+        config: ClientConfig,
     ):
         """
         Initialize the CresNext WebSocket client.
 
         Args:
-            config (ClientConfig, optional): Configuration object containing
-                all settings
-            host (str, optional): The hostname or IP address of the CresNext
-                system (used if config not provided)
-            port (int): The port number (default: 443, used if config not
-                provided)
-            ssl (bool): Whether to use SSL/TLS (default: True, used if config
-                not provided)
+            config (ClientConfig): Configuration object containing all settings
         """
-        if config is not None:
-            self.host = config.host
-            self.port = config.port
-            self.ssl = config.ssl
-            self.auto_reconnect = config.auto_reconnect
-            self.auth_url = config.auth_url
-            self.websocket_url = config.websocket_url
-            self.ping_interval = config.ping_interval
-            self.reconnect_delay = config.reconnect_delay
-        else:
-            if host is None:
-                raise ValueError(
-                    "Either config must be provided or host must be specified"
-                )
-            self.host = host
-            self.port = port
-            self.ssl = ssl
-            self.auto_reconnect = False
-            # Use default placeholder URLs
-            self.auth_url = "/api/auth/login"
-            self.websocket_url = "/api/ws"
-            self.ping_interval = 30.0
-            self.reconnect_delay = 5.0
+        self.config = config
 
         self._websocket = None
         self._connected = False
@@ -112,8 +83,8 @@ class CresNextWSClient:
         self._should_reconnect = False
 
         logger.debug(
-            f"CresNextWSClient initialized for {self.host}:{self.port} "
-            f"(SSL: {self.ssl}, Auto-reconnect: {self.auto_reconnect})"
+            f"CresNextWSClient initialized for {self.config.host}:{self.config.port} "
+            f"(SSL: {self.config.ssl}, Auto-reconnect: {self.config.auto_reconnect})"
         )
 
     async def _authenticate(
@@ -133,12 +104,18 @@ class CresNextWSClient:
             logger.debug("No credentials provided, proceeding without authentication")
             return None
 
-        protocol = "https" if self.ssl else "http"
-        auth_endpoint = f"{protocol}://{self.host}:{self.port}{self.auth_url}"
+        protocol = "https" if self.config.ssl else "http"
+        auth_endpoint = f"{protocol}://{self.config.host}:{self.config.port}{self.config.auth_path}"
 
         try:
             if not self._session:
-                self._session = aiohttp.ClientSession()
+                connector = None
+                if self.config.ssl and self.config.ignore_self_signed:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    connector = aiohttp.TCPConnector(ssl=ctx)
+                self._session = aiohttp.ClientSession(connector=connector) if connector else aiohttp.ClientSession()
 
             auth_data = {"username": username, "password": password}
 
@@ -180,15 +157,15 @@ class CresNextWSClient:
             logger.debug("Already connected")
             return True
 
-        logger.info(f"Connecting to CresNext at {self.host}:{self.port}")
+        logger.info(f"Connecting to CresNext at {self.config.host}:{self.config.port}")
 
         try:
             # Authenticate and get token if credentials provided
             self._auth_token = await self._authenticate(username, password)
 
             # Build WebSocket URL
-            protocol = "wss" if self.ssl else "ws"
-            ws_url = f"{protocol}://{self.host}:{self.port}{self.websocket_url}"
+            protocol = "wss" if self.config.ssl else "ws"
+            ws_url = f"{protocol}://{self.config.host}:{self.config.port}{self.config.websocket_path}"
 
             # Add auth token to URL if available
             if self._auth_token:
@@ -201,16 +178,24 @@ class CresNextWSClient:
             if self._auth_token:
                 additional_headers["Authorization"] = f"Bearer {self._auth_token}"
 
+            ws_ssl = None
+            if self.config.ssl and self.config.ignore_self_signed:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ws_ssl = ctx
+
             self._websocket = await websockets.connect(
                 ws_url,
                 additional_headers=additional_headers,
                 ping_interval=None,  # We'll handle pings ourselves
                 ping_timeout=None,
                 close_timeout=10,
+                ssl=ws_ssl,
             )
 
             self._connected = True
-            self._should_reconnect = self.auto_reconnect
+            self._should_reconnect = self.config.auto_reconnect
 
             # Start ping task
             self._ping_task = asyncio.create_task(self._ping_loop())
@@ -221,10 +206,10 @@ class CresNextWSClient:
         except Exception as e:
             logger.debug(f"Connection failed: {e}")
             # For test environments (like test.local), simulate a successful connection
-            if "test.local" in self.host or self.host.startswith("test"):
+            if "test.local" in self.config.host or self.config.host.startswith("test"):
                 logger.debug("Test environment detected, simulating connection")
                 self._connected = True
-                self._should_reconnect = self.auto_reconnect
+                self._should_reconnect = self.config.auto_reconnect
                 # Don't start ping task in test mode
                 return True
 
@@ -237,7 +222,7 @@ class CresNextWSClient:
         """
         try:
             while self._connected and self._websocket:
-                await asyncio.sleep(self.ping_interval)
+                await asyncio.sleep(self.config.ping_interval)
                 if self._connected and self._websocket:
                     try:
                         pong_waiter = await self._websocket.ping()
@@ -278,9 +263,9 @@ class CresNextWSClient:
         try:
             while self._should_reconnect and not self._connected:
                 logger.info(
-                    f"Attempting reconnection in {self.reconnect_delay} seconds..."
+                    f"Attempting reconnection in {self.config.reconnect_delay} seconds..."
                 )
-                await asyncio.sleep(self.reconnect_delay)
+                await asyncio.sleep(self.config.reconnect_delay)
 
                 if not self._should_reconnect:
                     break

@@ -7,8 +7,9 @@ from cresnextws import CresNextWSClient, ClientConfig
 
 
 def test_client_initialization():
-    """Test that CresNextWSClient can be initialized with basic parameters."""
-    client = CresNextWSClient(host="test.local")
+    """Test that CresNextWSClient can be initialized with basic config."""
+    config = ClientConfig(host="test.local")
+    client = CresNextWSClient(config)
 
     assert client.host == "test.local"
     assert client.port == 443
@@ -17,8 +18,9 @@ def test_client_initialization():
 
 
 def test_client_initialization_with_custom_params():
-    """Test CresNextWSClient initialization with custom parameters."""
-    client = CresNextWSClient(host="test.local", port=8080, ssl=False)
+    """Test CresNextWSClient initialization with custom parameters via config."""
+    config = ClientConfig(host="test.local", port=8080, ssl=False)
+    client = CresNextWSClient(config)
 
     assert client.host == "test.local"
     assert client.port == 8080
@@ -29,7 +31,7 @@ def test_client_initialization_with_custom_params():
 @pytest.mark.asyncio
 async def test_client_connect_disconnect():
     """Test basic connect/disconnect functionality."""
-    client = CresNextWSClient(host="test.local")
+    client = CresNextWSClient(ClientConfig(host="test.local"))
 
     # Test connection
     result = await client.connect()
@@ -44,7 +46,7 @@ async def test_client_connect_disconnect():
 @pytest.mark.asyncio
 async def test_send_command_when_connected():
     """Test sending a command when connected."""
-    client = CresNextWSClient(host="test.local")
+    client = CresNextWSClient(ClientConfig(host="test.local"))
     await client.connect()
 
     response = await client.send_command("test_command", {"key": "value"})
@@ -59,7 +61,7 @@ async def test_send_command_when_connected():
 @pytest.mark.asyncio
 async def test_send_command_when_not_connected():
     """Test that sending a command when not connected raises an error."""
-    client = CresNextWSClient(host="test.local")
+    client = CresNextWSClient(ClientConfig(host="test.local"))
 
     with pytest.raises(
         ConnectionError, match="Not connected to CresNext system"
@@ -70,7 +72,7 @@ async def test_send_command_when_not_connected():
 @pytest.mark.asyncio
 async def test_context_manager():
     """Test that the client works as an async context manager."""
-    async with CresNextWSClient(host="test.local") as client:
+    async with CresNextWSClient(ClientConfig(host="test.local")) as client:
         assert client.connected is True
 
         response = await client.send_command("test_command")
@@ -106,29 +108,17 @@ def test_client_config_initialization_with_custom_params():
     assert client.connected is False
 
 
-def test_client_config_vs_individual_params():
-    """Test that config and individual parameters work the same way."""
-    # Create client with individual params
-    client1 = CresNextWSClient(host="test.local", port=8080, ssl=False)
-
-    # Create client with config
+def test_client_config_values_applied():
+    """Test that values from config are applied correctly."""
     config = ClientConfig(host="test.local", port=8080, ssl=False)
-    client2 = CresNextWSClient(config)
+    client = CresNextWSClient(config)
 
-    assert client1.host == client2.host
-    assert client1.port == client2.port
-    assert client1.ssl == client2.ssl
-    assert client1.auto_reconnect is False  # Default for individual
-    assert client2.auto_reconnect is False  # Default for config
+    assert client.host == "test.local"
+    assert client.port == 8080
+    assert client.ssl is False
 
 
-def test_client_initialization_no_host_or_config():
-    """Test that initialization fails without host or config."""
-    with pytest.raises(
-        ValueError,
-        match="Either config must be provided or host must be specified",
-    ):
-        CresNextWSClient()
+# Note: Constructor now requires a config object; no backward compatibility for individual params.
 
 
 @pytest.mark.asyncio
@@ -166,57 +156,50 @@ def test_client_config_with_custom_urls():
     """Test ClientConfig with custom URL endpoints."""
     config = ClientConfig(
         host="test.local",
-        auth_url="/custom/auth/endpoint",
-        websocket_url="/custom/ws/endpoint",
+        auth_path="/custom/auth/endpoint",
+    websocket_path="/custom/ws/endpoint",
         ping_interval=15.0,
         reconnect_delay=2.5
     )
     client = CresNextWSClient(config)
 
     assert client.host == "test.local"
-    assert client.auth_url == "/custom/auth/endpoint"
-    assert client.websocket_url == "/custom/ws/endpoint"
+    assert client.auth_path == "/custom/auth/endpoint"
+    assert client.websocket_path == "/custom/ws/endpoint"
     assert client.ping_interval == 15.0
     assert client.reconnect_delay == 2.5
 
 
 def test_client_default_urls():
-    """Test that default URL placeholders are set correctly."""
-    client = CresNextWSClient(host="test.local")
+    """Test that default URL placeholders are set correctly from config defaults."""
+    client = CresNextWSClient(ClientConfig(host="test.local"))
 
-    assert client.auth_url == "/api/auth/login"
-    assert client.websocket_url == "/api/ws"
+    assert client.auth_path == "/userlogin.html"
+    assert client.websocket_path == "/websockify"
     assert client.ping_interval == 30.0
     assert client.reconnect_delay == 5.0
 
 
-def test_client_config_vs_individual_with_urls():
-    """Test that config URLs work correctly vs individual parameters."""
-    # Create client with individual params (should get defaults)
-    client1 = CresNextWSClient(host="test.local", port=8080)
-
-    # Create client with config
+def test_client_config_with_urls():
+    """Test that config URLs are applied correctly."""
     config = ClientConfig(
-        host="test.local", 
-        port=8080, 
-        auth_url="/config/auth",
-        websocket_url="/config/ws"
+        host="test.local",
+        port=8080,
+        auth_path="/config/auth",
+    websocket_path="/config/ws",
     )
-    client2 = CresNextWSClient(config)
+    client = CresNextWSClient(config)
 
-    assert client1.host == client2.host
-    assert client1.port == client2.port
-    # URLs should be different
-    assert client1.auth_url == "/api/auth/login"  # default
-    assert client2.auth_url == "/config/auth"     # from config
-    assert client1.websocket_url == "/api/ws"     # default
-    assert client2.websocket_url == "/config/ws"  # from config
+    assert client.host == "test.local"
+    assert client.port == 8080
+    assert client.auth_path == "/config/auth"
+    assert client.websocket_path == "/config/ws"
 
 
 @pytest.mark.asyncio
 async def test_client_with_credentials():
     """Test that connect method accepts credentials."""
-    client = CresNextWSClient(host="test.local")
+    client = CresNextWSClient(ClientConfig(host="test.local"))
     
     # Should connect successfully in test mode even with credentials
     result = await client.connect(username="testuser", password="testpass")
