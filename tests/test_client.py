@@ -160,3 +160,68 @@ async def test_context_manager_with_config():
 
     # Client should be disconnected after context manager exit
     assert client.connected is False
+
+
+def test_client_config_with_custom_urls():
+    """Test ClientConfig with custom URL endpoints."""
+    config = ClientConfig(
+        host="test.local",
+        auth_url="/custom/auth/endpoint",
+        websocket_url="/custom/ws/endpoint",
+        ping_interval=15.0,
+        reconnect_delay=2.5
+    )
+    client = CresNextWSClient(config)
+
+    assert client.host == "test.local"
+    assert client.auth_url == "/custom/auth/endpoint"
+    assert client.websocket_url == "/custom/ws/endpoint"
+    assert client.ping_interval == 15.0
+    assert client.reconnect_delay == 2.5
+
+
+def test_client_default_urls():
+    """Test that default URL placeholders are set correctly."""
+    client = CresNextWSClient(host="test.local")
+
+    assert client.auth_url == "/api/auth/login"
+    assert client.websocket_url == "/api/ws"
+    assert client.ping_interval == 30.0
+    assert client.reconnect_delay == 5.0
+
+
+def test_client_config_vs_individual_with_urls():
+    """Test that config URLs work correctly vs individual parameters."""
+    # Create client with individual params (should get defaults)
+    client1 = CresNextWSClient(host="test.local", port=8080)
+
+    # Create client with config
+    config = ClientConfig(
+        host="test.local", 
+        port=8080, 
+        auth_url="/config/auth",
+        websocket_url="/config/ws"
+    )
+    client2 = CresNextWSClient(config)
+
+    assert client1.host == client2.host
+    assert client1.port == client2.port
+    # URLs should be different
+    assert client1.auth_url == "/api/auth/login"  # default
+    assert client2.auth_url == "/config/auth"     # from config
+    assert client1.websocket_url == "/api/ws"     # default
+    assert client2.websocket_url == "/config/ws"  # from config
+
+
+@pytest.mark.asyncio
+async def test_client_with_credentials():
+    """Test that connect method accepts credentials."""
+    client = CresNextWSClient(host="test.local")
+    
+    # Should connect successfully in test mode even with credentials
+    result = await client.connect(username="testuser", password="testpass")
+    assert result is True
+    assert client.connected is True
+    
+    await client.disconnect()
+    assert client.connected is False

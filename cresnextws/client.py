@@ -30,11 +30,11 @@ class ClientConfig:
         ssl (bool): Whether to use SSL/TLS (default: True)
         auto_reconnect (bool): Whether to automatically reconnect on
             connection loss (default: False)
-        auth_url (str): URL for REST authentication endpoint 
+        auth_url (str): URL for REST authentication endpoint
             (default: placeholder)
-        websocket_url (str): URL for WebSocket endpoint 
+        websocket_url (str): URL for WebSocket endpoint
             (default: placeholder)
-        ping_interval (float): Interval in seconds for WebSocket ping 
+        ping_interval (float): Interval in seconds for WebSocket ping
             (default: 30.0)
         reconnect_delay (float): Delay in seconds before reconnection attempt
             (default: 5.0)
@@ -45,9 +45,9 @@ class ClientConfig:
     ssl: bool = True
     auto_reconnect: bool = False
     auth_url: str = "/api/auth/login"  # Placeholder REST endpoint
-    websocket_url: str = "/api/ws"     # Placeholder WebSocket endpoint
-    ping_interval: float = 30.0        # Ping every 30 seconds
-    reconnect_delay: float = 5.0       # Wait 5 seconds before reconnect
+    websocket_url: str = "/api/ws"  # Placeholder WebSocket endpoint
+    ping_interval: float = 30.0  # Ping every 30 seconds
+    reconnect_delay: float = 5.0  # Wait 5 seconds before reconnect
 
 
 class CresNextWSClient:
@@ -135,16 +135,13 @@ class CresNextWSClient:
 
         protocol = "https" if self.ssl else "http"
         auth_endpoint = f"{protocol}://{self.host}:{self.port}{self.auth_url}"
-        
+
         try:
             if not self._session:
                 self._session = aiohttp.ClientSession()
-            
-            auth_data = {
-                "username": username,
-                "password": password
-            }
-            
+
+            auth_data = {"username": username, "password": password}
+
             logger.debug(f"Authenticating with {auth_endpoint}")
             async with self._session.post(auth_endpoint, json=auth_data) as response:
                 if response.status == 200:
@@ -157,9 +154,11 @@ class CresNextWSClient:
                         logger.warning("Authentication response missing token")
                         return None
                 else:
-                    logger.warning(f"Authentication failed with status {response.status}")
+                    logger.warning(
+                        f"Authentication failed with status {response.status}"
+                    )
                     return None
-                    
+
         except Exception as e:
             logger.error(f"Authentication error: {e}")
             return None
@@ -182,53 +181,53 @@ class CresNextWSClient:
             return True
 
         logger.info(f"Connecting to CresNext at {self.host}:{self.port}")
-        
+
         try:
             # Authenticate and get token if credentials provided
             self._auth_token = await self._authenticate(username, password)
-            
+
             # Build WebSocket URL
             protocol = "wss" if self.ssl else "ws"
             ws_url = f"{protocol}://{self.host}:{self.port}{self.websocket_url}"
-            
+
             # Add auth token to URL if available
             if self._auth_token:
                 ws_url += f"?token={self._auth_token}"
-            
+
             logger.debug(f"Connecting to WebSocket: {ws_url}")
-            
+
             # Connect to WebSocket
-            extra_headers = {}
+            additional_headers = {}
             if self._auth_token:
-                extra_headers["Authorization"] = f"Bearer {self._auth_token}"
-            
+                additional_headers["Authorization"] = f"Bearer {self._auth_token}"
+
             self._websocket = await websockets.connect(
                 ws_url,
-                extra_headers=extra_headers,
+                additional_headers=additional_headers,
                 ping_interval=None,  # We'll handle pings ourselves
                 ping_timeout=None,
-                close_timeout=10
+                close_timeout=10,
             )
-            
+
             self._connected = True
             self._should_reconnect = self.auto_reconnect
-            
+
             # Start ping task
             self._ping_task = asyncio.create_task(self._ping_loop())
-            
+
             logger.info("WebSocket connection established")
             return True
-            
+
         except Exception as e:
             logger.debug(f"Connection failed: {e}")
-            # For test environments (like test.local), we'll simulate a successful connection
+            # For test environments (like test.local), simulate a successful connection
             if "test.local" in self.host or self.host.startswith("test"):
                 logger.debug("Test environment detected, simulating connection")
                 self._connected = True
                 self._should_reconnect = self.auto_reconnect
                 # Don't start ping task in test mode
                 return True
-            
+
             self._connected = False
             return False
 
@@ -261,13 +260,13 @@ class CresNextWSClient:
         """
         if not self._should_reconnect:
             return
-            
+
         logger.info("Connection lost, attempting to reconnect...")
         self._connected = False
-        
+
         # Clean up current connection
         await self._cleanup_connection()
-        
+
         # Start reconnection task
         if not self._reconnect_task or self._reconnect_task.done():
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
@@ -278,12 +277,14 @@ class CresNextWSClient:
         """
         try:
             while self._should_reconnect and not self._connected:
-                logger.info(f"Attempting reconnection in {self.reconnect_delay} seconds...")
+                logger.info(
+                    f"Attempting reconnection in {self.reconnect_delay} seconds..."
+                )
                 await asyncio.sleep(self.reconnect_delay)
-                
+
                 if not self._should_reconnect:
                     break
-                    
+
                 # Attempt to reconnect
                 success = await self.connect()
                 if success:
@@ -291,7 +292,7 @@ class CresNextWSClient:
                     break
                 else:
                     logger.warning("Reconnection failed, will retry...")
-                    
+
         except asyncio.CancelledError:
             logger.debug("Reconnect loop cancelled")
         except Exception as e:
@@ -325,12 +326,12 @@ class CresNextWSClient:
         if not self._connected:
             logger.debug("Already disconnected")
             return
-            
+
         logger.info("Disconnecting from CresNext")
-        
+
         # Stop reconnection attempts
         self._should_reconnect = False
-        
+
         # Cancel reconnect task
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
@@ -339,19 +340,19 @@ class CresNextWSClient:
             except asyncio.CancelledError:
                 pass
             self._reconnect_task = None
-        
+
         # Clean up connection
         await self._cleanup_connection()
-        
+
         # Close HTTP session
         if self._session:
             await self._session.close()
             self._session = None
-            
+
         self._connected = False
         self._auth_token = None
         logger.info("Disconnected from CresNext")
-    
+
     @property
     def connected(self) -> bool:
         """
@@ -385,23 +386,20 @@ class CresNextWSClient:
 
         try:
             # Create message payload
-            message = {
-                "command": command,
-                "timestamp": time.time()
-            }
+            message = {"command": command, "timestamp": time.time()}
             if data:
                 message["data"] = data
-            
+
             # Send message if we have a real WebSocket connection
             if self._websocket:
                 await self._websocket.send(json.dumps(message))
             else:
                 # Test mode - just log the command
                 logger.debug(f"Test mode: Would send {json.dumps(message)}")
-            
+
             # Return response (for now, always success)
             return {"status": "success", "command": command, "data": data}
-            
+
         except Exception as e:
             logger.error(f"Error sending command: {e}")
             # Check if connection is still alive
