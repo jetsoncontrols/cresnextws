@@ -11,9 +11,9 @@ def test_client_initialization():
     config = ClientConfig(host="test.local")
     client = CresNextWSClient(config)
 
-    assert client.host == "test.local"
-    assert client.port == 443
-    assert client.ssl is True
+    assert client.config.host == "test.local"
+    assert client.config.port == 443
+    assert client.config.ssl is True
     assert client.connected is False
 
 
@@ -22,9 +22,9 @@ def test_client_initialization_with_custom_params():
     config = ClientConfig(host="test.local", port=8080, ssl=False)
     client = CresNextWSClient(config)
 
-    assert client.host == "test.local"
-    assert client.port == 8080
-    assert client.ssl is False
+    assert client.config.host == "test.local"
+    assert client.config.port == 8080
+    assert client.config.ssl is False
     assert client.connected is False
 
 
@@ -87,10 +87,10 @@ def test_client_config_initialization():
     config = ClientConfig(host="test.local")
     client = CresNextWSClient(config)
 
-    assert client.host == "test.local"
-    assert client.port == 443
-    assert client.ssl is True
-    assert client.auto_reconnect is False
+    assert client.config.host == "test.local"
+    assert client.config.port == 443
+    assert client.config.ssl is True
+    assert client.config.auto_reconnect is False
     assert client.connected is False
 
 
@@ -101,10 +101,10 @@ def test_client_config_initialization_with_custom_params():
     )
     client = CresNextWSClient(config)
 
-    assert client.host == "test.local"
-    assert client.port == 8080
-    assert client.ssl is False
-    assert client.auto_reconnect is True
+    assert client.config.host == "test.local"
+    assert client.config.port == 8080
+    assert client.config.ssl is False
+    assert client.config.auto_reconnect is True
     assert client.connected is False
 
 
@@ -113,9 +113,9 @@ def test_client_config_values_applied():
     config = ClientConfig(host="test.local", port=8080, ssl=False)
     client = CresNextWSClient(config)
 
-    assert client.host == "test.local"
-    assert client.port == 8080
-    assert client.ssl is False
+    assert client.config.host == "test.local"
+    assert client.config.port == 8080
+    assert client.config.ssl is False
 
 
 # Note: Constructor now requires a config object; no backward compatibility for individual params.
@@ -143,12 +143,11 @@ async def test_context_manager_with_config():
     config = ClientConfig(host="test.local", auto_reconnect=True)
     async with CresNextWSClient(config) as client:
         assert client.connected is True
-        assert client.auto_reconnect is True
-
         response = await client.send_command("test_command")
         assert response["status"] == "success"
 
-    # Client should be disconnected after context manager exit
+    # After context manager exit
+    assert client.config.auto_reconnect is True
     assert client.connected is False
 
 
@@ -158,26 +157,26 @@ def test_client_config_with_custom_urls():
         host="test.local",
         auth_path="/custom/auth/endpoint",
     websocket_path="/custom/ws/endpoint",
-        ping_interval=15.0,
+        ws_ping_interval=15.0,
         reconnect_delay=2.5
     )
     client = CresNextWSClient(config)
 
-    assert client.host == "test.local"
-    assert client.auth_path == "/custom/auth/endpoint"
-    assert client.websocket_path == "/custom/ws/endpoint"
-    assert client.ping_interval == 15.0
-    assert client.reconnect_delay == 2.5
+    assert client.config.host == "test.local"
+    assert client.config.auth_path == "/custom/auth/endpoint"
+    assert client.config.websocket_path == "/custom/ws/endpoint"
+    assert client.config.ws_ping_interval == 15.0
+    assert client.config.reconnect_delay == 2.5
 
 
 def test_client_default_urls():
     """Test that default URL placeholders are set correctly from config defaults."""
     client = CresNextWSClient(ClientConfig(host="test.local"))
 
-    assert client.auth_path == "/userlogin.html"
-    assert client.websocket_path == "/websockify"
-    assert client.ping_interval == 30.0
-    assert client.reconnect_delay == 5.0
+    assert client.config.auth_path == "/userlogin.html"
+    assert client.config.websocket_path == "/websockify"
+    assert client.config.ws_ping_interval == 30.0
+    assert client.config.reconnect_delay == 5.0
 
 
 def test_client_config_with_urls():
@@ -190,10 +189,10 @@ def test_client_config_with_urls():
     )
     client = CresNextWSClient(config)
 
-    assert client.host == "test.local"
-    assert client.port == 8080
-    assert client.auth_path == "/config/auth"
-    assert client.websocket_path == "/config/ws"
+    assert client.config.host == "test.local"
+    assert client.config.port == 8080
+    assert client.config.auth_path == "/config/auth"
+    assert client.config.websocket_path == "/config/ws"
 
 
 @pytest.mark.asyncio

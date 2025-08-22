@@ -37,7 +37,7 @@ class ClientConfig:
             (default: "/userlogin.html")
         websocket_path (str): Path for WebSocket endpoint
             (default: "/websockify")
-        ping_interval (float): Interval in seconds for WebSocket ping
+    ws_ping_interval (float): Interval in seconds for WebSocket ping
             (default: 30.0)
         reconnect_delay (float): Delay in seconds before reconnection attempt
             (default: 5.0)
@@ -50,7 +50,7 @@ class ClientConfig:
     auto_reconnect: bool = False
     auth_path: str = "/userlogin.html"  # REST auth path
     websocket_path: str = "/websockify"  # WebSocket path
-    ping_interval: float = 30.0  # Ping every 30 seconds
+    ws_ping_interval: float = 30.0  # Ping every 30 seconds
     reconnect_delay: float = 5.0  # Wait 5 seconds before reconnect
 
 
@@ -222,7 +222,7 @@ class CresNextWSClient:
         """
         try:
             while self._connected and self._websocket:
-                await asyncio.sleep(self.config.ping_interval)
+                await asyncio.sleep(self.config.ws_ping_interval)
                 if self._connected and self._websocket:
                     try:
                         pong_waiter = await self._websocket.ping()
