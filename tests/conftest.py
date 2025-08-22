@@ -201,7 +201,9 @@ def system_config(service_name: str, services_config: Dict[str, Any]) -> Dict[st
 def client_config(system_config: Dict[str, Any]) -> ClientConfig:
     # Map system_config into ClientConfig fields
     return ClientConfig(
-        host=system_config.get("host", "test.local"),
+    host=system_config.get("host", "test.local"),
+    username=(system_config.get("auth", {}) or {}).get("username", "u"),
+    password=(system_config.get("auth", {}) or {}).get("password", "p"),
         port=int(system_config.get("port", 443)),
         ssl=bool(system_config.get("ssl", True)),
         ignore_self_signed=bool(system_config.get("ignore_self_signed", True)),
@@ -209,7 +211,7 @@ def client_config(system_config: Dict[str, Any]) -> ClientConfig:
         auth_path=system_config.get("auth_path", "/userlogin.html"),
         websocket_path=system_config.get("websocket_path", "/websockify"),
         ws_ping_interval=float(system_config.get("ws_ping_interval", 30.0)),
-        reconnect_delay=float(system_config.get("reconnect_delay", 5.0)),
+    reconnect_delay=float(system_config.get("reconnect_delay", 5.0)),
     )
 
 
@@ -233,7 +235,7 @@ async def client(pytestconfig: pytest.Config, client_config: ClientConfig, crede
 
     c = CresNextWSClient(client_config)
     try:
-        await c.connect(username=credentials.get("username"), password=credentials.get("password"))
+        await c.connect()
         yield c
     finally:
         await c.disconnect()

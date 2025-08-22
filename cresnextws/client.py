@@ -27,6 +27,8 @@ class ClientConfig:
 
     Attributes:
         host (str): The hostname or IP address of the CresNext system
+        username (str): Username for authentication (required)
+        password (str): Password for authentication (required)
         port (int): The port number (default: 443)
         ssl (bool): Whether to use SSL/TLS (default: True)
         ignore_self_signed (bool): If True, don't verify TLS certificates
@@ -44,6 +46,8 @@ class ClientConfig:
     """
 
     host: str
+    username: str
+    password: str
     port: int = 443
     ssl: bool = True
     ignore_self_signed: bool = True
@@ -87,23 +91,13 @@ class CresNextWSClient:
             f"(SSL: {self.config.ssl}, Auto-reconnect: {self.config.auto_reconnect})"
         )
 
-    async def _authenticate(
-        self, username: Optional[str] = None, password: Optional[str] = None
-    ) -> Optional[str]:
+    async def _authenticate(self) -> Optional[str]:
         """
         Authenticate with the CresNext system via REST API to get auth token.
-
-        Args:
-            username (str, optional): Username for authentication
-            password (str, optional): Password for authentication
 
         Returns:
             str: Authentication token if successful, None otherwise
         """
-        if not username or not password:
-            logger.debug("No credentials provided, proceeding without authentication")
-            return None
-
         protocol = "https" if self.config.ssl else "http"
         auth_endpoint = f"{protocol}://{self.config.host}:{self.config.port}{self.config.auth_path}"
 
@@ -115,9 +109,16 @@ class CresNextWSClient:
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
                     connector = aiohttp.TCPConnector(ssl=ctx)
-                self._session = aiohttp.ClientSession(connector=connector) if connector else aiohttp.ClientSession()
+                self._session = (
+                    aiohttp.ClientSession(connector=connector)
+                    if connector
+                    else aiohttp.ClientSession()
+                )
 
-            auth_data = {"username": username, "password": password}
+            auth_data = {
+                "username": self.config.username,
+                "password": self.config.password,
+            }
 
             logger.debug(f"Authenticating with {auth_endpoint}")
             async with self._session.post(auth_endpoint, json=auth_data) as response:
@@ -127,28 +128,20 @@ class CresNextWSClient:
                     if token:
                         logger.debug("Authentication successful")
                         return token
-                    else:
-                        logger.warning("Authentication response missing token")
-                        return None
-                else:
-                    logger.warning(
-                        f"Authentication failed with status {response.status}"
-                    )
+                    logger.warning("Authentication response missing token")
                     return None
+                logger.warning(
+                    f"Authentication failed with status {response.status}"
+                )
+                return None
 
         except Exception as e:
             logger.error(f"Authentication error: {e}")
             return None
 
-    async def connect(
-        self, username: Optional[str] = None, password: Optional[str] = None
-    ) -> bool:
+    async def connect(self) -> bool:
         """
         Connect to the CresNext WebSocket API.
-
-        Args:
-            username (str, optional): Username for authentication
-            password (str, optional): Password for authentication
 
         Returns:
             bool: True if connection successful, False otherwise
@@ -160,8 +153,14 @@ class CresNextWSClient:
         logger.info(f"Connecting to CresNext at {self.config.host}:{self.config.port}")
 
         try:
-            # Authenticate and get token if credentials provided
-            self._auth_token = await self._authenticate(username, password)
+            # Authenticate and get token if credentials provided in config
+            self._auth_token = await self._authenticate()
+
+            # If authentication failed, don't proceed to open the WebSocket
+            if self._auth_token is None:
+                logger.error("Authentication failed; aborting connection")
+                self._connected = False
+                return False
 
             # Build WebSocket URL
             protocol = "wss" if self.config.ssl else "ws"

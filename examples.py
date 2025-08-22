@@ -19,11 +19,19 @@ async def basic_example():
     print("=== Basic Example ===")
     
     # Create a client instance
-    client = CresNextWSClient(ClientConfig(host="example.cresnext.local", port=443, ssl=True))
+    client = CresNextWSClient(
+        ClientConfig(
+            host="example.cresnext.local",
+            port=443,
+            ssl=True,
+            username="admin",
+            password="password",
+        )
+    )
     
     # Connect to the system
     print(f"Connecting to {client.config.host}:{client.config.port}...")
-    connected = await client.connect(username="admin", password="password")
+    connected = await client.connect()
     
     if connected:
         print("✓ Connected successfully!")
@@ -52,7 +60,9 @@ async def context_manager_example():
     
     try:
         # Using async context manager for automatic connection management
-        async with CresNextWSClient(ClientConfig(host="example.cresnext.local")) as client:
+        async with CresNextWSClient(
+            ClientConfig(host="example.cresnext.local", username="admin", password="password")
+        ) as client:
             print(f"✓ Auto-connected to {client.config.host}")
             
             # Send commands
@@ -75,6 +85,8 @@ async def config_example():
         port=443,
         ssl=True,
         auto_reconnect=True,  # Enable automatic reconnection
+        username="admin",
+        password="password",
     )
 
     # Create a client instance using the config
@@ -82,7 +94,7 @@ async def config_example():
 
     # Connect to the system
     print(f"Connecting to {client.config.host}:{client.config.port}...")
-    connected = await client.connect(username="admin", password="password")
+    connected = await client.connect()
 
     if connected:
         print("✓ Connected successfully!")

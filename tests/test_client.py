@@ -2,13 +2,12 @@
 Basic tests for CresNextWSClient
 """
 
-import pytest
 from cresnextws import CresNextWSClient, ClientConfig
 
 
 def test_client_initialization():
     """Test that CresNextWSClient can be initialized with basic config."""
-    config = ClientConfig(host="test.local")
+    config = ClientConfig(host="test.local", username="u", password="p")
     client = CresNextWSClient(config)
 
     assert client.config.host == "test.local"
@@ -19,7 +18,7 @@ def test_client_initialization():
 
 def test_client_initialization_with_custom_params():
     """Test CresNextWSClient initialization with custom parameters via config."""
-    config = ClientConfig(host="test.local", port=8080, ssl=False)
+    config = ClientConfig(host="test.local", username="u", password="p", port=8080, ssl=False)
     client = CresNextWSClient(config)
 
     assert client.config.host == "test.local"
@@ -30,7 +29,7 @@ def test_client_initialization_with_custom_params():
 
 def test_client_config_initialization():
     """Test CresNextWSClient initialization with ClientConfig."""
-    config = ClientConfig(host="test.local")
+    config = ClientConfig(host="test.local", username="u", password="p")
     client = CresNextWSClient(config)
 
     assert client.config.host == "test.local"
@@ -44,8 +43,10 @@ def test_client_config_with_custom_urls():
     """Test ClientConfig with custom URL endpoints."""
     config = ClientConfig(
         host="test.local",
+        username="u",
+        password="p",
         auth_path="/custom/auth/endpoint",
-    websocket_path="/custom/ws/endpoint",
+        websocket_path="/custom/ws/endpoint",
         ws_ping_interval=15.0,
         reconnect_delay=2.5
     )
@@ -60,7 +61,7 @@ def test_client_config_with_custom_urls():
 
 def test_client_default_urls():
     """Test that default URL placeholders are set correctly from config defaults."""
-    client = CresNextWSClient(ClientConfig(host="test.local"))
+    client = CresNextWSClient(ClientConfig(host="test.local", username="u", password="p"))
 
     assert client.config.auth_path == "/userlogin.html"
     assert client.config.websocket_path == "/websockify"

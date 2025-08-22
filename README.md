@@ -34,14 +34,16 @@ async def main():
         host="your-cresnext-host.local",
         port=443,
         ssl=True,
-        auto_reconnect=True  # Enable automatic reconnection
+        auto_reconnect=True,  # Enable automatic reconnection
+        username="your_username",
+        password="your_password",
     )
     
     # Create client instance with config
     client = CresNextWSClient(config)
     
     # Connect to the system
-    await client.connect(username="your_username", password="your_password")
+    await client.connect()
     
     # Send a command
     response = await client.send_command("get_status")
@@ -62,7 +64,12 @@ from cresnextws import CresNextWSClient, ClientConfig
 
 async def main():
     # Using configuration object (required)
-    config = ClientConfig(host="your-cresnext-host.local", auto_reconnect=True)
+    config = ClientConfig(
+        host="your-cresnext-host.local",
+        auto_reconnect=True,
+        username="your_username",
+        password="your_password",
+    )
     async with CresNextWSClient(config) as client:
         response = await client.send_command("get_status")
         print(f"Response: {response}")
