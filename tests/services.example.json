@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "description": "Example CresNextWS test systems file. Copy to services.json and edit as needed.",
+    "notes": [
+      "Values support ${ENV_VAR} substitution.",
+      "Set enabled=false to exclude a system unless --systems explicitly selects it."
+    ]
+  },
+  "defaults": {
+    "port": 443,
+    "ssl": true,
+    "ignore_self_signed": true,
+    "auto_reconnect": false,
+    "auth_path": "/userlogin.html",
+    "websocket_path": "/websockify",
+    "ws_ping_interval": 30.0,
+    "reconnect_delay": 5.0
+  },
+  "systems": {
+    "local_sim": {
+      "enabled": true,
+      "host": "test.local",
+      "port": 443,
+      "ssl": true,
+      "ignore_self_signed": true,
+      "auth": {
+        "username": "${CRESNEXTWS_USER}",
+        "password": "${CRESNEXTWS_PASS}"
+      }
+    },
+    "lab_unit": {
+      "enabled": false,
+      "host": "192.168.1.50",
+      "auth": {
+        "username": "admin",
+        "password": "changeme"
+      }
+    }
+  }
+}

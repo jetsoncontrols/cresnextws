@@ -86,6 +86,49 @@ pip install -e .[dev]
 pytest
 ```
 
+### Service-driven Integration Tests
+
+You can provide real system connection details to pytest without hard-coding them in tests.
+
+1) Create a services file:
+     - Copy `tests/services.example.json` to `tests/services.json`
+     - Edit values or set environment variables referenced by `${VARS}`
+
+2) Run integration tests by opting in:
+
+```bash
+pytest --run-integration --systems all
+```
+
+Alternatively, since integration tests are marked with `@pytest.mark.integration` and excluded by default via project config, you can select them explicitly:
+
+```bash
+pytest -m integration --run-integration [other flags]
+```
+
+Flags and environment variables:
+- `--services-file PATH` or `CRESNEXTWS_SERVICES_FILE=PATH` to point to a JSON file
+- `--systems name1,name2` or `CRESNEXTWS_SYSTEMS=name1,name2` to select systems
+- Use `--systems all` to include all systems with `"enabled": true`
+
+Example JSON structure:
+
+```json
+{
+    "systems": {
+        "local_sim": {
+            "enabled": true,
+            "host": "test.local",
+            "auth": {"username": "${CRESNEXTWS_USER}", "password": "${CRESNEXTWS_PASS}"}
+        }
+    }
+}
+```
+
+Notes:
+- Integration tests are skipped unless `--run-integration` is supplied.
+- Missing systems or disabled entries are automatically skipped.
+
 ### Code Formatting
 
 ```bash

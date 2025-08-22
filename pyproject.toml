@@ -60,3 +60,8 @@ python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+# By default, do not run tests marked as "integration".
+# Opt-in with: pytest -m integration --run-integration [other flags]
+addopts = "-m 'not integration'"
