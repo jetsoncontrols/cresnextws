@@ -39,7 +39,7 @@ class ClientConfig:
             (default: "/userlogin.html")
         websocket_path (str): Path for WebSocket endpoint
             (default: "/websockify")
-    ws_ping_interval (float): Interval in seconds for WebSocket ping
+        ws_ping_interval (float): Interval in seconds for WebSocket ping
             (default: 30.0)
         reconnect_delay (float): Delay in seconds before reconnection attempt
             (default: 5.0)
