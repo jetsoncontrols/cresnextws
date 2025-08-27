@@ -34,7 +34,7 @@ class ClientConfig:
         ignore_self_signed (bool): If True, don't verify TLS certificates
             (useful for self-signed certs; default: True)
         auto_reconnect (bool): Whether to automatically reconnect on
-            connection loss (default: False)
+            connection loss (default: True)
         auth_path (str): Path for REST authentication endpoint
             (default: "/userlogin.html")
         websocket_path (str): Path for WebSocket endpoint
@@ -51,8 +51,9 @@ class ClientConfig:
     port: int = 443
     ssl: bool = True
     ignore_self_signed: bool = True
-    auto_reconnect: bool = False
+    auto_reconnect: bool = True
     auth_path: str = "/userlogin.html"  # REST auth path
+    logout_path: str = "/logout"  # REST logout path
     websocket_path: str = "/websockify"  # WebSocket path
     ws_ping_interval: float = 30.0  # Ping every 30 seconds
     reconnect_delay: float = 5.0  # Wait 5 seconds before reconnect
@@ -66,10 +67,7 @@ class CresNextWSClient:
     WebSocket API endpoints.
     """
 
-    def __init__(
-        self,
-        config: ClientConfig,
-    ):
+    def __init__(self, config: ClientConfig):
         """
         Initialize the CresNext WebSocket client.
 
@@ -84,7 +82,6 @@ class CresNextWSClient:
         self._ping_task = None
         self._reconnect_task = None
         self._session = None
-        self._should_reconnect = False
 
         logger.debug(
             f"CresNextWSClient initialized for {self.config.host}:{self.config.port} "
@@ -100,8 +97,11 @@ class CresNextWSClient:
         """
         protocol = "https" if self.config.ssl else "http"
         auth_endpoint = f"{protocol}://{self.config.host}:{self.config.port}{self.config.auth_path}"
+        logout_endpoint = f"{protocol}://{self.config.host}:{self.config.port}{self.config.logout_path}"
 
         try:
+            if self._session:
+                await self._session.get(logout_endpoint)
             if not self._session:
                 connector = None
                 if self.config.ssl and self.config.ignore_self_signed:
@@ -109,26 +109,27 @@ class CresNextWSClient:
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
                     connector = aiohttp.TCPConnector(ssl=ctx)
+                cookie_jar = aiohttp.CookieJar(unsafe=True)
                 self._session = (
-                    aiohttp.ClientSession(connector=connector)
+                    aiohttp.ClientSession(connector=connector, cookie_jar=cookie_jar)
                     if connector
-                    else aiohttp.ClientSession()
+                    else aiohttp.ClientSession(cookie_jar=cookie_jar)
                 )
 
             auth_data = {
-                "username": self.config.username,
-                "password": self.config.password,
+                "login": self.config.username,
+                "passwd": self.config.password,
             }
 
             logger.debug(f"Authenticating with {auth_endpoint}")
-            async with self._session.post(auth_endpoint, json=auth_data) as response:
+            async with self._session.post(auth_endpoint, data=auth_data) as response:
                 if response.status == 200:
-                    result = await response.json()
-                    token = result.get("token") or result.get("access_token")
+                    # Look for token in response headers instead of JSON body
+                    token = response.headers.get("CREST-XSRF-TOKEN")
                     if token:
                         logger.debug("Authentication successful")
                         return token
-                    logger.warning("Authentication response missing token")
+                    logger.warning("Authentication response missing CREST-XSRF-TOKEN header")
                     return None
                 logger.warning(
                     f"Authentication failed with status {response.status}"
@@ -194,7 +195,6 @@ class CresNextWSClient:
             )
 
             self._connected = True
-            self._should_reconnect = self.config.auto_reconnect
 
             # Start ping task
             self._ping_task = asyncio.create_task(self._ping_loop())
@@ -208,8 +208,6 @@ class CresNextWSClient:
             if "test.local" in self.config.host or self.config.host.startswith("test"):
                 logger.debug("Test environment detected, simulating connection")
                 self._connected = True
-                self._should_reconnect = self.config.auto_reconnect
-                # Don't start ping task in test mode
                 return True
 
             self._connected = False
@@ -229,7 +227,7 @@ class CresNextWSClient:
                         logger.debug("Ping successful")
                     except Exception as e:
                         logger.warning(f"Ping failed: {e}")
-                        if self._should_reconnect:
+                        if self.config.auto_reconnect:
                             logger.info("Starting reconnection due to ping failure")
                             await self._handle_disconnection()
                         break
@@ -242,7 +240,7 @@ class CresNextWSClient:
         """
         Handle unexpected disconnection and attempt reconnection if enabled.
         """
-        if not self._should_reconnect:
+        if not self.config.auto_reconnect:
             return
 
         logger.info("Connection lost, attempting to reconnect...")
@@ -260,13 +258,13 @@ class CresNextWSClient:
         Background task to handle automatic reconnection.
         """
         try:
-            while self._should_reconnect and not self._connected:
+            while self.config.auto_reconnect and not self._connected:
                 logger.info(
                     f"Attempting reconnection in {self.config.reconnect_delay} seconds..."
                 )
                 await asyncio.sleep(self.config.reconnect_delay)
 
-                if not self._should_reconnect:
+                if not self.config.auto_reconnect:
                     break
 
                 # Attempt to reconnect
@@ -313,8 +311,7 @@ class CresNextWSClient:
 
         logger.info("Disconnecting from CresNext")
 
-        # Stop reconnection attempts
-        self._should_reconnect = False
+    # Stop reconnection attempts (by cancelling tasks below)
 
         # Cancel reconnect task
         if self._reconnect_task and not self._reconnect_task.done():
@@ -387,7 +384,7 @@ class CresNextWSClient:
         except Exception as e:
             logger.error(f"Error sending command: {e}")
             # Check if connection is still alive
-            if self._should_reconnect and self._websocket:
+            if self.config.auto_reconnect and self._websocket:
                 await self._handle_disconnection()
             raise ConnectionError(f"Failed to send command: {e}")
 
