@@ -148,8 +148,8 @@ class CresNextWSClient:
             async with self._http_session.post(
                 self.get_auth_endpoint(),
                 headers={
-                    "Origin": self.config.host,
-                    "Referer": f"{self.config.host}{self.config.auth_path}",
+                    "Origin": self.get_base_endpoint(),
+                    "Referer": f"{self.get_auth_endpoint()}",
                 },
                 data={
                     "login": self.config.username,
@@ -207,10 +207,9 @@ class CresNextWSClient:
             cookies = self._http_session.cookie_jar.filter_cookies(URL(self.get_base_endpoint()))
             logger.debug(f"Connecting to WebSocket: {self.get_ws_url()}")
 
-            # Build Cookie header with auth-related cookies
-            cookie_parts = []
-            if "TRACKID" in cookies and cookies["TRACKID"].value:
-                cookie_parts.append(f"TRACKID={cookies['TRACKID'].value}")
+            # Build Cookie header with all cookies for this host
+            cookie_parts = [f"{name}={m.value}" for name, m in cookies.items()] if cookies else []
+            # Append XSRF token if present (server expects it as a cookie on WS)
             if auth_token:
                 cookie_parts.append(f"CREST-XSRF-TOKEN={auth_token}")
             headers = {
