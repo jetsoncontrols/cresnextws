@@ -32,8 +32,6 @@ async def main():
     # Create configuration (required)
     config = ClientConfig(
         host="your-cresnext-host.local",
-        port=443,
-        ssl=True,
         auto_reconnect=True,  # Enable automatic reconnection
         username="your_username",
         password="your_password",
@@ -91,6 +89,9 @@ pip install -e .[dev]
 
 ```bash
 pytest
+
+To run integration tests:
+pytest -m integration --run-integration --systems <systems entries from services.json>
 ```
 
 ### Service-driven Integration Tests

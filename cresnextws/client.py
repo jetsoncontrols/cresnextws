@@ -13,8 +13,10 @@ from typing import Optional, Dict, Any, Type
 
 import aiohttp
 import websockets
+from websockets.extensions.permessage_deflate import ClientPerMessageDeflateFactory
 from dataclasses import dataclass
 import ssl
+from yarl import URL
 
 
 logger = logging.getLogger(__name__)
@@ -29,8 +31,6 @@ class ClientConfig:
         host (str): The hostname or IP address of the CresNext system
         username (str): Username for authentication (required)
         password (str): Password for authentication (required)
-        port (int): The port number (default: 443)
-        ssl (bool): Whether to use SSL/TLS (default: True)
         ignore_self_signed (bool): If True, don't verify TLS certificates
             (useful for self-signed certs; default: True)
         auto_reconnect (bool): Whether to automatically reconnect on
@@ -48,8 +48,6 @@ class ClientConfig:
     host: str
     username: str
     password: str
-    port: int = 443
-    ssl: bool = True
     ignore_self_signed: bool = True
     auto_reconnect: bool = True
     auth_path: str = "/userlogin.html"  # REST auth path
@@ -81,12 +79,40 @@ class CresNextWSClient:
         self._auth_token = None
         self._ping_task = None
         self._reconnect_task = None
-        self._session = None
+        self._http_session = None
 
         logger.debug(
-            f"CresNextWSClient initialized for {self.config.host}:{self.config.port} "
-            f"(SSL: {self.config.ssl}, Auto-reconnect: {self.config.auto_reconnect})"
+            f"CresNextWSClient initialized for {self.config.host} "
+            f"(Auto-reconnect: {self.config.auto_reconnect})"
         )
+
+    def get_base_endpoint(self) -> str:
+        """Return the base URL for the configured host.
+
+        Example: https://{host}
+        """
+        return f"https://{self.config.host}" # :{self.config.port}
+    
+    def get_auth_endpoint(self) -> str:
+        """Return the full REST auth endpoint for the configured host.
+
+        Example: https://{host}{auth_path}
+        """
+        return f"{self.get_base_endpoint()}{self.config.auth_path}"
+
+    def get_logout_endpoint(self) -> str:
+        """Return the full REST logout endpoint for the configured host.
+
+        Example: https://{host}{logout_path}
+        """
+        return f"{self.get_base_endpoint()}{self.config.logout_path}"
+
+    def get_ws_url(self) -> str:
+        """Return the full WebSocket URL for the configured host.
+
+        Example: wss://{host}{websocket_path} (or ws for non-SSL)
+        """
+        return f"wss://{self.config.host}{self.config.websocket_path}" #:{self.config.port}
 
     async def _authenticate(self) -> Optional[str]:
         """
@@ -95,39 +121,48 @@ class CresNextWSClient:
         Returns:
             str: Authentication token if successful, None otherwise
         """
-        protocol = "https" if self.config.ssl else "http"
-        auth_endpoint = f"{protocol}://{self.config.host}:{self.config.port}{self.config.auth_path}"
-        logout_endpoint = f"{protocol}://{self.config.host}:{self.config.port}{self.config.logout_path}"
-
         try:
-            if self._session:
-                await self._session.get(logout_endpoint)
-            if not self._session:
-                connector = None
-                if self.config.ssl and self.config.ignore_self_signed:
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    connector = aiohttp.TCPConnector(ssl=ctx)
+            if self._http_session:
+                await self._http_session.get(self.get_logout_endpoint())
+            if not self._http_session:
+                ssl_context = ssl.create_default_context()
+                if self.config.ignore_self_signed:
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                connector = aiohttp.TCPConnector(ssl=ssl_context)
                 cookie_jar = aiohttp.CookieJar(unsafe=True)
-                self._session = (
+                self._http_session = (
                     aiohttp.ClientSession(connector=connector, cookie_jar=cookie_jar)
                     if connector
                     else aiohttp.ClientSession(cookie_jar=cookie_jar)
                 )
+            logger.debug(f"Getting TRACKID cookie from {self.get_auth_endpoint()}")
+            async with self._http_session.get(self.get_auth_endpoint()) as response:
+                if response.status != 200:
+                    logger.error(
+                        f"Initial auth request failed with status {response.status}"
+                    )
+                    return None
 
-            auth_data = {
-                "login": self.config.username,
-                "passwd": self.config.password,
-            }
-
-            logger.debug(f"Authenticating with {auth_endpoint}")
-            async with self._session.post(auth_endpoint, data=auth_data) as response:
+            logger.debug(f"Authenticating with {self.get_auth_endpoint()}")
+            async with self._http_session.post(
+                self.get_auth_endpoint(),
+                headers={
+                    "Origin": self.config.host,
+                    "Referer": f"{self.config.host}{self.config.auth_path}",
+                },
+                data={
+                    "login": self.config.username,
+                    "passwd": self.config.password,
+                }
+            ) as response:
                 if response.status == 200:
-                    # Look for token in response headers instead of JSON body
                     token = response.headers.get("CREST-XSRF-TOKEN")
                     if token:
                         logger.debug("Authentication successful")
+                        # print out all cookies in the cookie jar
+                        # for cookie in self._http_session.cookie_jar:
+                        #     logger.error(f"Cookie: {cookie.key} = {cookie.value}")
                         return token
                     logger.warning("Authentication response missing CREST-XSRF-TOKEN header")
                     return None
@@ -151,47 +186,55 @@ class CresNextWSClient:
             logger.debug("Already connected")
             return True
 
-        logger.info(f"Connecting to CresNext at {self.config.host}:{self.config.port}")
+        logger.info(f"Connecting to CresNext WS API at {self.config.host}")
 
         try:
             # Authenticate and get token if credentials provided in config
-            self._auth_token = await self._authenticate()
+            auth_token = await self._authenticate()
+            logger.error(f"Auth token: {auth_token}")
 
             # If authentication failed, don't proceed to open the WebSocket
-            if self._auth_token is None:
+            if auth_token is None or self._http_session is None:
                 logger.error("Authentication failed; aborting connection")
                 self._connected = False
                 return False
 
-            # Build WebSocket URL
-            protocol = "wss" if self.config.ssl else "ws"
-            ws_url = f"{protocol}://{self.config.host}:{self.config.port}{self.config.websocket_path}"
+            ssl_context = ssl.create_default_context()
+            if self.config.ignore_self_signed:
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
 
-            # Add auth token to URL if available
-            if self._auth_token:
-                ws_url += f"?token={self._auth_token}"
+            cookies = self._http_session.cookie_jar.filter_cookies(URL(self.get_base_endpoint()))
+            logger.debug(f"Connecting to WebSocket: {self.get_ws_url()}")
 
-            logger.debug(f"Connecting to WebSocket: {ws_url}")
+            # Build Cookie header with auth-related cookies
+            cookie_parts = []
+            if "TRACKID" in cookies and cookies["TRACKID"].value:
+                cookie_parts.append(f"TRACKID={cookies['TRACKID'].value}")
+            if auth_token:
+                cookie_parts.append(f"CREST-XSRF-TOKEN={auth_token}")
+            headers = {
+                "Origin": self.get_base_endpoint(),
+                "Referer": f"{self.get_auth_endpoint()}",
+            }
+            if cookie_parts:
+                headers["Cookie"] = "; ".join(cookie_parts)
 
-            # Connect to WebSocket
-            additional_headers = {}
-            if self._auth_token:
-                additional_headers["Authorization"] = f"Bearer {self._auth_token}"
-
-            ws_ssl = None
-            if self.config.ssl and self.config.ignore_self_signed:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                ws_ssl = ctx
-
+            logger.error(f"WebSocket headers: {headers}")
             self._websocket = await websockets.connect(
-                ws_url,
-                additional_headers=additional_headers,
+                self.get_ws_url(),
+                additional_headers=headers,
+                extensions=[
+                    ClientPerMessageDeflateFactory(
+                        client_max_window_bits=11,
+                        server_max_window_bits=11,
+                        compress_settings={"memLevel": 4},
+                    )
+                ],
                 ping_interval=None,  # We'll handle pings ourselves
                 ping_timeout=None,
                 close_timeout=10,
-                ssl=ws_ssl,
+                ssl=ssl_context,
             )
 
             self._connected = True
@@ -199,17 +242,11 @@ class CresNextWSClient:
             # Start ping task
             self._ping_task = asyncio.create_task(self._ping_loop())
 
-            logger.info("WebSocket connection established")
+            logger.error("WebSocket connection established")
             return True
 
         except Exception as e:
-            logger.debug(f"Connection failed: {e}")
-            # For test environments (like test.local), simulate a successful connection
-            if "test.local" in self.config.host or self.config.host.startswith("test"):
-                logger.debug("Test environment detected, simulating connection")
-                self._connected = True
-                return True
-
+            logger.error(f"Connection failed: {e}")
             self._connected = False
             return False
 
@@ -326,9 +363,9 @@ class CresNextWSClient:
         await self._cleanup_connection()
 
         # Close HTTP session
-        if self._session:
-            await self._session.close()
-            self._session = None
+        if self._http_session:
+            await self._http_session.close()
+            self._http_session = None
 
         self._connected = False
         self._auth_token = None

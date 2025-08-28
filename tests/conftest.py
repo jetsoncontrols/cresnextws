@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
+import pytest_asyncio
 
 from cresnextws import ClientConfig, CresNextWSClient
 
@@ -204,8 +205,8 @@ def client_config(system_config: Dict[str, Any]) -> ClientConfig:
     host=system_config.get("host", "test.local"),
     username=(system_config.get("auth", {}) or {}).get("username", "u"),
     password=(system_config.get("auth", {}) or {}).get("password", "p"),
-        port=int(system_config.get("port", 443)),
-        ssl=bool(system_config.get("ssl", True)),
+        # port=int(system_config.get("port", 443)),
+        # ssl=bool(system_config.get("ssl", True)),
         ignore_self_signed=bool(system_config.get("ignore_self_signed", True)),
         auto_reconnect=bool(system_config.get("auto_reconnect", False)),
         auth_path=system_config.get("auth_path", "/userlogin.html"),
@@ -224,7 +225,7 @@ def credentials(system_config: Dict[str, Any]) -> Dict[str, Optional[str]]:
     }
 
 
-@pytest.fixture()
+@pytest_asyncio.fixture()
 async def client(pytestconfig: pytest.Config, client_config: ClientConfig, credentials: Dict[str, Optional[str]]):
     """Integration fixture that yields a connected client to the selected system.
 

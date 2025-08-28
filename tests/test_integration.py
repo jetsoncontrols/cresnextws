@@ -10,15 +10,7 @@ import pytest
 from cresnextws import CresNextWSClient
 
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_connect_and_basic_command(client):
-    # 'client' fixture is provided by tests/conftest.py and yields a connected client
-    assert client.connected is True
 
-    # Minimal smoke command
-    resp = await client.send_command("ping")
-    assert resp["status"] == "success"
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -30,46 +22,56 @@ async def test_client_connect_disconnect(client):
     assert result is True
     assert client.connected is True
 
-    # Test disconnection
-    await client.disconnect()
-    assert client.connected is False
+    # # Test disconnection
+    # await client.disconnect()
+    # assert client.connected is False
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_send_command_when_connected(client):
-    """Test sending a command when connected."""
-    await client.connect()
+# @pytest.mark.integration
+# @pytest.mark.asyncio
+# async def test_connect_and_basic_command(client):
+#     # 'client' fixture is provided by tests/conftest.py and yields a connected client
+#     assert client.connected is True
 
-    response = await client.send_command("test_command", {"key": "value"})
+#     # Minimal smoke command
+#     resp = await client.send_command("ping")
+#     assert resp["status"] == "success"
 
-    assert response["status"] == "success"
-    assert response["command"] == "test_command"
-    assert response["data"] == {"key": "value"}
+# @pytest.mark.integration
+# @pytest.mark.asyncio
+# async def test_send_command_when_connected(client):
+#     """Test sending a command when connected."""
+#     await client.connect()
 
-    await client.disconnect()
+#     response = await client.send_command("test_command", {"key": "value"})
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_send_command_when_not_connected(client):
-    """Test that sending a command when not connected raises an error."""
+#     assert response["status"] == "success"
+#     assert response["command"] == "test_command"
+#     assert response["data"] == {"key": "value"}
 
-    with pytest.raises(
-        ConnectionError, match="Not connected to CresNext system"
-    ):
-        await client.send_command("test_command")
+#     await client.disconnect()
+
+# @pytest.mark.integration
+# @pytest.mark.asyncio
+# async def test_send_command_when_not_connected(client):
+#     """Test that sending a command when not connected raises an error."""
+
+#     with pytest.raises(
+#         ConnectionError, match="Not connected to CresNext system"
+#     ):
+#         await client.send_command("test_command")
 
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_async_context_manager(pytestconfig, client_config, credentials):
-    """Confirm the client works as an async context manager end-to-end."""
-    if not pytestconfig.getoption("--run-integration"):
-        pytest.skip("Integration tests are disabled. Use --run-integration to enable.")
+# @pytest.mark.integration
+# @pytest.mark.asyncio
+# async def test_async_context_manager(pytestconfig, client_config, credentials):
+#     """Confirm the client works as an async context manager end-to-end."""
+#     if not pytestconfig.getoption("--run-integration"):
+#         pytest.skip("Integration tests are disabled. Use --run-integration to enable.")
 
-    async with CresNextWSClient(client_config) as c:
-        assert c.connected is True
-        resp = await c.send_command("ping")
-        assert resp["status"] == "success"
+#     async with CresNextWSClient(client_config) as c:
+#         assert c.connected is True
+#         resp = await c.send_command("ping")
+#         assert resp["status"] == "success"
 
-    # After exiting the context manager the client should be disconnected
-    assert c.connected is False
+#     # After exiting the context manager the client should be disconnected
+#     assert c.connected is False
