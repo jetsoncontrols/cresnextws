@@ -131,10 +131,8 @@ class CresNextWSClient:
                     ssl_context.verify_mode = ssl.CERT_NONE
                 connector = aiohttp.TCPConnector(ssl=ssl_context)
                 cookie_jar = aiohttp.CookieJar(unsafe=True)
-                self._http_session = (
-                    aiohttp.ClientSession(connector=connector, cookie_jar=cookie_jar)
-                    if connector
-                    else aiohttp.ClientSession(cookie_jar=cookie_jar)
+                self._http_session = aiohttp.ClientSession(
+                    connector=connector, cookie_jar=cookie_jar
                 )
             logger.debug(f"Getting TRACKID cookie from {self.get_auth_endpoint()}")
             async with self._http_session.get(self.get_auth_endpoint()) as response:
@@ -160,9 +158,6 @@ class CresNextWSClient:
                     token = response.headers.get("CREST-XSRF-TOKEN")
                     if token:
                         logger.debug("Authentication successful")
-                        # print out all cookies in the cookie jar
-                        # for cookie in self._http_session.cookie_jar:
-                        #     logger.error(f"Cookie: {cookie.key} = {cookie.value}")
                         return token
                     logger.warning("Authentication response missing CREST-XSRF-TOKEN header")
                     return None
@@ -191,7 +186,6 @@ class CresNextWSClient:
         try:
             # Authenticate and get token if credentials provided in config
             auth_token = await self._authenticate()
-            logger.error(f"Auth token: {auth_token}")
 
             # If authentication failed, don't proceed to open the WebSocket
             if auth_token is None or self._http_session is None:
@@ -219,7 +213,6 @@ class CresNextWSClient:
             if cookie_parts:
                 headers["Cookie"] = "; ".join(cookie_parts)
 
-            logger.error(f"WebSocket headers: {headers}")
             self._websocket = await websockets.connect(
                 self.get_ws_url(),
                 additional_headers=headers,
@@ -347,7 +340,7 @@ class CresNextWSClient:
 
         logger.info("Disconnecting from CresNext")
 
-    # Stop reconnection attempts (by cancelling tasks below)
+        # Stop reconnection attempts (by cancelling tasks below)
 
         # Cancel reconnect task
         if self._reconnect_task and not self._reconnect_task.done():

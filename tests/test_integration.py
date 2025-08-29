@@ -22,9 +22,9 @@ async def test_client_connect_disconnect(client):
     assert result is True
     assert client.connected is True
 
-    # # Test disconnection
-    # await client.disconnect()
-    # assert client.connected is False
+    # Test disconnection
+    await client.disconnect()
+    assert client.connected is False
 
 # @pytest.mark.integration
 # @pytest.mark.asyncio
