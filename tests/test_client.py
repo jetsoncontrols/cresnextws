@@ -11,19 +11,15 @@ def test_client_initialization():
     client = CresNextWSClient(config)
 
     assert client.config.host == "test.local"
-    assert client.config.port == 443
-    assert client.config.ssl is True
     assert client.connected is False
 
 
 def test_client_initialization_with_custom_params():
     """Test CresNextWSClient initialization with custom parameters via config."""
-    config = ClientConfig(host="test.local", username="u", password="p", port=8080, ssl=False)
+    config = ClientConfig(host="test.local", username="u", password="p")
     client = CresNextWSClient(config)
 
     assert client.config.host == "test.local"
-    assert client.config.port == 8080
-    assert client.config.ssl is False
     assert client.connected is False
 
 
@@ -33,9 +29,7 @@ def test_client_config_initialization():
     client = CresNextWSClient(config)
 
     assert client.config.host == "test.local"
-    assert client.config.port == 443
-    assert client.config.ssl is True
-    assert client.config.auto_reconnect is False
+    assert client.config.auto_reconnect is True
     assert client.connected is False
 
 
