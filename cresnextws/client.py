@@ -74,12 +74,16 @@ class CresNextWSClient:
         """
         self.config = config
 
+        # Connection state
         self._websocket = None
         self._connected = False
         self._auth_token = None
-        self._ping_task = None
         self._reconnect_task = None
         self._http_session = None
+
+        # Background tasks and message queue
+        self._recv_task = None
+        self._inbound_queue = asyncio.Queue()
 
         logger.debug(
             f"CresNextWSClient initialized for {self.config.host} "
@@ -223,18 +227,17 @@ class CresNextWSClient:
                         compress_settings={"memLevel": 4},
                     )
                 ],
-                ping_interval=None,  # We'll handle pings ourselves
-                ping_timeout=None,
+                ping_interval=self.config.ws_ping_interval,
+                ping_timeout=10,
                 close_timeout=10,
                 ssl=ssl_context,
             )
 
             self._connected = True
+            # Start receive task
+            self._recv_task = asyncio.create_task(self._recv_loop())
 
-            # Start ping task
-            self._ping_task = asyncio.create_task(self._ping_loop())
-
-            logger.error("WebSocket connection established")
+            logger.info("WebSocket connection established")
             return True
 
         except Exception as e:
@@ -242,45 +245,23 @@ class CresNextWSClient:
             self._connected = False
             return False
 
-    async def _ping_loop(self) -> None:
-        """
-        Background task to send periodic pings to keep connection alive.
-        """
-        try:
-            while self._connected and self._websocket:
-                await asyncio.sleep(self.config.ws_ping_interval)
-                if self._connected and self._websocket:
-                    try:
-                        pong_waiter = await self._websocket.ping()
-                        await asyncio.wait_for(pong_waiter, timeout=10)
-                        logger.debug("Ping successful")
-                    except Exception as e:
-                        logger.warning(f"Ping failed: {e}")
-                        if self.config.auto_reconnect:
-                            logger.info("Starting reconnection due to ping failure")
-                            await self._handle_disconnection()
-                        break
-        except asyncio.CancelledError:
-            logger.debug("Ping loop cancelled")
-        except Exception as e:
-            logger.error(f"Ping loop error: {e}")
 
     async def _handle_disconnection(self) -> None:
         """
         Handle unexpected disconnection and attempt reconnection if enabled.
         """
-        if not self.config.auto_reconnect:
-            return
-
-        logger.info("Connection lost, attempting to reconnect...")
+        
+        logger.info("Connection lost")
         self._connected = False
 
         # Clean up current connection
         await self._cleanup_connection()
 
-        # Start reconnection task
-        if not self._reconnect_task or self._reconnect_task.done():
-            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        if self.config.auto_reconnect:
+            logger.info("Attempting to reconnect...")
+            # Start reconnection task
+            if not self._reconnect_task or self._reconnect_task.done():
+                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
     async def _reconnect_loop(self) -> None:
         """
@@ -313,14 +294,14 @@ class CresNextWSClient:
         """
         Clean up WebSocket connection and background tasks.
         """
-        # Cancel ping task
-        if self._ping_task and not self._ping_task.done():
-            self._ping_task.cancel()
+        # Cancel receive task
+        if self._recv_task and not self._recv_task.done():
+            self._recv_task.cancel()
             try:
-                await self._ping_task
+                await self._recv_task
             except asyncio.CancelledError:
                 pass
-            self._ping_task = None
+            self._recv_task = None
 
         # Close WebSocket
         if self._websocket:
@@ -329,6 +310,50 @@ class CresNextWSClient:
             except Exception as e:
                 logger.debug(f"Error closing WebSocket: {e}")
             self._websocket = None
+
+    async def _recv_loop(self) -> None:
+        """Background task that receives messages from the WebSocket.
+
+        - Parses JSON text frames into Python objects and enqueues them.
+        - Binary frames are logged and ignored
+        - On error/close, triggers disconnect handling if auto_reconnect is enabled.
+        """
+        try:
+            if not self._websocket:
+                return
+            async for raw in self._websocket:
+                try:
+                    if isinstance(raw, bytes):
+                        logger.debug("Received binary message (%d bytes)", len(raw))
+                        continue
+                    payload = json.loads(raw)
+                    await self._inbound_queue.put(payload)
+                except json.JSONDecodeError:
+                    logger.warning("Received non-JSON text frame: %s", raw)
+                except Exception as e:
+                    logger.error(f"Error handling received message: {e}")
+        except asyncio.CancelledError:
+            logger.debug("Receive loop cancelled")
+        except Exception as e:
+            logger.error(f"Receive loop error: {e}")
+            if self.config.auto_reconnect:
+                await self._handle_disconnection()
+
+    async def next_message(self, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Await the next inbound message from the receive loop.
+
+        Args:
+            timeout: Optional seconds to wait before returning None.
+
+        Returns:
+            The next message dict, or None on timeout.
+        """
+        try:
+            if timeout is not None:
+                return await asyncio.wait_for(self._inbound_queue.get(), timeout=timeout)
+            return await self._inbound_queue.get()
+        except asyncio.TimeoutError:
+            return None
 
     async def disconnect(self) -> None:
         """
