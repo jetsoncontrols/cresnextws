@@ -318,6 +318,7 @@ class CresNextWSClient:
         - Binary frames are logged and ignored
         - On error/close, triggers disconnect handling if auto_reconnect is enabled.
         """
+        buffer = ""
         try:
             if not self._websocket:
                 return
@@ -326,10 +327,24 @@ class CresNextWSClient:
                     if isinstance(raw, bytes):
                         logger.debug("Received binary message (%d bytes)", len(raw))
                         continue
-                    payload = json.loads(raw)
-                    await self._inbound_queue.put(payload)
-                except json.JSONDecodeError:
-                    logger.warning("Received non-JSON text frame: %s", raw)
+                    # Ensure we have a string to work with
+                    if isinstance(raw, str):
+                        buffer += raw
+                    else:
+                        # Handle other types (bytearray, memoryview) by converting to string
+                        buffer += str(raw)
+                
+                    # Try to parse complete JSON objects from buffer
+                    while buffer:
+                        try:
+                            # Find end of first complete JSON object
+                            decoder = json.JSONDecoder()
+                            payload, idx = decoder.raw_decode(buffer)
+                            await self._inbound_queue.put(payload)
+                            buffer = buffer[idx:].lstrip()  # Remove parsed JSON, skip whitespace
+                        except json.JSONDecodeError:
+                            # Incomplete JSON, wait for more data
+                            break
                 except Exception as e:
                     logger.error(f"Error handling received message: {e}")
         except asyncio.CancelledError:
