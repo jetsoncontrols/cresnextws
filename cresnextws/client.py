@@ -441,22 +441,40 @@ class CresNextWSClient:
                     if 'application/json' in content_type:
                         data = await response.json()
                         logger.debug(f"HTTP GET successful: {response.status}")
-                        return data
-                    else:
-                        # For non-JSON responses, return text content in a dict
-                        text = await response.text()
-                        logger.debug(f"HTTP GET successful (non-JSON): {response.status}")
                         return {
-                            'content': text,
+                            'content': data,
                             'content_type': content_type,
                             'status': response.status
                         }
+                    else:
+                        # For non-JSON responses, try to parse as JSON, fallback to text
+                        text = await response.text()
+                        text = text.rstrip('\r\n')
+                        
+                        # Try to parse as JSON even if content-type doesn't indicate it
+                        try:
+                            json_data = json.loads(text)
+                            logger.debug(f"HTTP GET successful (parsed JSON): {response.status}")
+                            return {
+                                'content': json_data,
+                                'content_type': content_type,
+                                'status': response.status
+                            }
+                        except json.JSONDecodeError:
+                            # Not valid JSON, return as text
+                            logger.debug(f"HTTP GET successful (text): {response.status}")
+                            return {
+                                'content': text,
+                                'content_type': content_type,
+                                'status': response.status
+                            }
                 else:
                     logger.warning(f"HTTP GET failed with status {response.status}")
                     return {
+                        'content': await response.text(),
+                        'content_type': response.headers.get('Content-Type', '').lower(),
                         'error': f"HTTP {response.status}",
-                        'status': response.status,
-                        'content': await response.text()
+                        'status': response.status
                     }
 
         except Exception as e:

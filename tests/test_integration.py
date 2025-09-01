@@ -47,12 +47,13 @@ async def test_http_get_device_hostname(client):
         # Check if we got a JSON response with the expected structure
         if isinstance(response, dict):
             # Expected structure: {"Device":{"Ethernet":{"HostName":"[value]"}}}
-            assert "Device" in response
-            assert "Ethernet" in response["Device"]
-            assert "HostName" in response["Device"]["Ethernet"]
+            assert "content" in response
+            assert "Device" in response["content"]
+            assert "Ethernet" in response["content"]["Device"]
+            assert "HostName" in response["content"]["Device"]["Ethernet"]
             
             # Verify that the hostname value is a string
-            hostname = response["Device"]["Ethernet"]["HostName"]
+            hostname = response["content"]["Device"]["Ethernet"]["HostName"]
             assert isinstance(hostname, str)
             assert len(hostname) > 0  # Should not be empty
             
