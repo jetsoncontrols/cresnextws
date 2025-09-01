@@ -26,15 +26,51 @@ async def test_client_connect_disconnect(client):
     await client.disconnect()
     assert client.connected is False
 
-# @pytest.mark.integration
-# @pytest.mark.asyncio
-# async def test_connect_and_basic_command(client):
-#     # 'client' fixture is provided by tests/conftest.py and yields a connected client
-#     assert client.connected is True
 
-#     # Minimal smoke command
-#     resp = await client.send_command("ping")
-#     assert resp["status"] == "success"
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_get_device_hostname(client):
+    """Test HTTP GET request to retrieve device hostname."""
+
+    # Test connection
+    result = await client.connect()
+    assert result is True
+    assert client.connected is True
+
+    try:
+        # Make HTTP GET request to retrieve device hostname
+        response = await client.http_get("/Device/Ethernet/HostName")
+        
+        # Verify we got a response
+        assert response is not None
+        
+        # Check if we got a JSON response with the expected structure
+        if isinstance(response, dict):
+            # Expected structure: {"Device":{"Ethernet":{"HostName":"[value]"}}}
+            assert "Device" in response
+            assert "Ethernet" in response["Device"]
+            assert "HostName" in response["Device"]["Ethernet"]
+            
+            # Verify that the hostname value is a string
+            hostname = response["Device"]["Ethernet"]["HostName"]
+            assert isinstance(hostname, str)
+            assert len(hostname) > 0  # Should not be empty
+            
+            print(f"Retrieved hostname: {hostname}")
+        else:
+            # If response is not JSON, it might be a different format
+            # Check if it contains status/error information
+            if "error" in response:
+                pytest.skip(f"HTTP GET returned error: {response['error']}")
+            else:
+                pytest.fail(f"Unexpected response format: {type(response)} - {response}")
+                
+    finally:
+        # Always disconnect
+        await client.disconnect()
+        assert client.connected is False
+
+
 
 # @pytest.mark.integration
 # @pytest.mark.asyncio

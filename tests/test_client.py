@@ -2,6 +2,8 @@
 Basic tests for CresNextWSClient
 """
 
+import pytest
+from typing import Any
 from cresnextws import CresNextWSClient, ClientConfig
 
 
@@ -61,3 +63,36 @@ def test_client_default_urls():
     assert client.config.websocket_path == "/websockify"
     assert client.config.ws_ping_interval == 30.0
     assert client.config.reconnect_delay == 5.0
+
+
+@pytest.mark.asyncio
+async def test_http_get_not_connected():
+    """Test that http_get raises RuntimeError when not connected."""
+    config = ClientConfig(host="test.local", username="u", password="p")
+    client = CresNextWSClient(config)
+
+    with pytest.raises(RuntimeError, match="Client is not connected"):
+        await client.http_get("/test/path")
+
+
+@pytest.mark.asyncio
+async def test_http_put_not_connected():
+    """Test that http_put raises RuntimeError when not connected."""
+    config = ClientConfig(host="test.local", username="u", password="p")
+    client = CresNextWSClient(config)
+
+    with pytest.raises(RuntimeError, match="Client is not connected"):
+        await client.http_put("/test/path", {"key": "value"})
+
+
+@pytest.mark.asyncio
+async def test_http_put_data_types():
+    """Test that http_put validates data types correctly."""
+    config = ClientConfig(host="test.local", username="u", password="p")
+    client = CresNextWSClient(config)
+
+    # Test unsupported data type - we need to bypass type checking for this test
+    with pytest.raises(TypeError, match="Unsupported data type"):
+        # Using Any to bypass type checking for test purposes
+        invalid_data: Any = object()
+        await client.http_put("/test/path", invalid_data)

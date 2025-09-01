@@ -118,6 +118,62 @@ async def config_example():
         print("✗ Failed to connect")
 
 
+async def http_get_example():
+    """Example of using the HTTP GET functionality."""
+    print("\n=== HTTP GET Example ===")
+    
+    # Create a client instance
+    client = CresNextWSClient(
+        ClientConfig(
+            host="example.cresnext.local",
+            username="admin",
+            password="password",
+        )
+    )
+    
+    try:
+        # Connect to the system
+        print(f"Connecting to {client.config.host}...")
+        connected = await client.connect()
+        
+        if connected:
+            print("✓ Connected successfully!")
+            
+            # Example HTTP GET requests
+            try:
+                # Get system status
+                print("Making HTTP GET request to /api/status...")
+                response = await client.http_get("/api/status")
+                if response:
+                    print(f"Status response: {response}")
+                
+                # Get device information  
+                print("Making HTTP GET request to /device/info...")
+                response = await client.http_get("/device/info")
+                if response:
+                    print(f"Device info response: {response}")
+                
+                # Example of handling non-JSON response
+                print("Making HTTP GET request to /version...")
+                response = await client.http_get("/version")
+                if response:
+                    print(f"Version response: {response}")
+                    
+            except Exception as e:
+                print(f"Error making HTTP request: {e}")
+            
+        else:
+            print("✗ Connection failed")
+            
+    except Exception as e:
+        print(f"Example error: {e}")
+    finally:
+        # Always disconnect
+        if client.connected:
+            await client.disconnect()
+            print("✓ Disconnected")
+
+
 async def main():
     """Run all examples."""
     print("CresNext WebSocket Client Examples")
@@ -126,6 +182,7 @@ async def main():
     await basic_example()
     await config_example()
     await context_manager_example()
+    await http_get_example()
 
     print("\n" + "=" * 40)
     print("Examples completed!")

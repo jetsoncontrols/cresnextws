@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Optional, Dict, Any, Type
+from typing import Optional, Dict, Any, Type, Union
 
 import aiohttp
 import websockets
@@ -413,49 +413,132 @@ class CresNextWSClient:
         """
         return self._connected
 
-    async def send_command(
-        self, command: str, data: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    async def http_get(self, path: str) -> Optional[Dict[str, Any]]:
         """
-        Send a command to the CresNext system.
+        Make an HTTP GET request to the connected/authenticated server.
 
         Args:
-            command (str): The command to send
-            data (dict, optional): Additional data to send with the command
+            path (str): The path to request (e.g., '/api/status', '/device/info')
 
         Returns:
-            dict: Response from the CresNext system
+            Dict[str, Any]: The response data as a dictionary if successful, None otherwise
 
         Raises:
-            ConnectionError: If not connected to the CresNext system
+            RuntimeError: If not connected or no active HTTP session
         """
-        if not self._connected:
-            raise ConnectionError("Not connected to CresNext system")
-
-        logger.debug(f"Sending command: {command}")
+        if not self._connected or not self._http_session:
+            raise RuntimeError("Client is not connected. Call connect() first.")
 
         try:
-            # Create message payload
-            message = {"command": command, "timestamp": time.time()}
-            if data:
-                message["data"] = data
+            # Construct full URL
+            url = f"{self.get_base_endpoint()}{path}"
+            logger.error(f"Making HTTP GET request to: {url}")
 
-            # Send message if we have a real WebSocket connection
-            if self._websocket:
-                await self._websocket.send(json.dumps(message))
-            else:
-                # Test mode - just log the command
-                logger.debug(f"Test mode: Would send {json.dumps(message)}")
-
-            # Return response (for now, always success)
-            return {"status": "success", "command": command, "data": data}
+            async with self._http_session.get(url) as response:
+                if response.status == 200:
+                    # Try to parse as JSON first
+                    content_type = response.headers.get('Content-Type', '').lower()
+                    if 'application/json' in content_type:
+                        data = await response.json()
+                        logger.debug(f"HTTP GET successful: {response.status}")
+                        return data
+                    else:
+                        # For non-JSON responses, return text content in a dict
+                        text = await response.text()
+                        logger.debug(f"HTTP GET successful (non-JSON): {response.status}")
+                        return {
+                            'content': text,
+                            'content_type': content_type,
+                            'status': response.status
+                        }
+                else:
+                    logger.warning(f"HTTP GET failed with status {response.status}")
+                    return {
+                        'error': f"HTTP {response.status}",
+                        'status': response.status,
+                        'content': await response.text()
+                    }
 
         except Exception as e:
-            logger.error(f"Error sending command: {e}")
-            # Check if connection is still alive
-            if self.config.auto_reconnect and self._websocket:
-                await self._handle_disconnection()
-            raise ConnectionError(f"Failed to send command: {e}")
+            logger.error(f"HTTP GET request failed: {e}")
+            return None
+
+    async def http_put(self, path: str, data: Union[Dict[str, Any], list, str, int, float]) -> Optional[Dict[str, Any]]:
+        """
+        Make an HTTP PUT request to the connected/authenticated server.
+
+        Args:
+            path (str): The path to request (e.g., '/api/config', '/device/settings')
+            data: The data to send in the PUT request. Can be a dict, list, string, float, or integer.
+
+        Returns:
+            Dict[str, Any]: The response data as a dictionary if successful, None otherwise
+
+        Raises:
+            RuntimeError: If not connected or no active HTTP session
+            TypeError: If data type is not supported
+        """
+        if not self._connected or not self._http_session:
+            raise RuntimeError("Client is not connected. Call connect() first.")
+
+        # Validate and prepare data based on type
+        if isinstance(data, (dict, list)):
+            # For dict and list, send as JSON
+            json_data = data
+            request_data = None
+            content_type = 'application/json'
+        elif isinstance(data, str):
+            # For string, send as text
+            json_data = None
+            request_data = data
+            content_type = 'text/plain'
+        elif isinstance(data, (int, float)):
+            # For numbers, convert to string and send as text
+            json_data = None
+            request_data = str(data)
+            content_type = 'text/plain'
+        else:
+            raise TypeError(f"Unsupported data type: {type(data)}. Must be dict, list, string, float, or integer.")
+
+        try:
+            # Construct full URL
+            url = f"{self.get_base_endpoint()}{path}"
+            logger.error(f"Making HTTP PUT request to: {url}")
+
+            # Prepare headers
+            headers = {'Content-Type': content_type}
+
+            # Make the PUT request
+            async with self._http_session.put(url, json=json_data, data=request_data, headers=headers) as response:
+                # Try to parse response
+                response_content_type = response.headers.get('Content-Type', '').lower()
+                
+                if response.status in [200, 201, 204]:
+                    # Success status codes
+                    if 'application/json' in response_content_type:
+                        response_data = await response.json()
+                        logger.debug(f"HTTP PUT successful: {response.status}")
+                        return response_data
+                    else:
+                        # For non-JSON responses, return text content in a dict
+                        text = await response.text()
+                        logger.debug(f"HTTP PUT successful (non-JSON): {response.status}")
+                        return {
+                            'content': text,
+                            'content_type': response_content_type,
+                            'status': response.status
+                        }
+                else:
+                    logger.warning(f"HTTP PUT failed with status {response.status}")
+                    return {
+                        'error': f"HTTP {response.status}",
+                        'status': response.status,
+                        'content': await response.text()
+                    }
+
+        except Exception as e:
+            logger.error(f"HTTP PUT request failed: {e}")
+            return None
 
     async def __aenter__(self) -> "CresNextWSClient":
         """Async context manager entry."""
