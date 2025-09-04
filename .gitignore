@@ -203,6 +203,7 @@ cython_debug/
 
 # Local test services config (may contain secrets)
 tests/services.json
+test.py
 
 # Marimo
 marimo/_static/

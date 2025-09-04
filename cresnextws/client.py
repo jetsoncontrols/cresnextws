@@ -8,7 +8,6 @@ with Crestron CresNext WebSocket API.
 import asyncio
 import json
 import logging
-import time
 from typing import Optional, Dict, Any, Type, Union
 
 import aiohttp
@@ -159,6 +158,7 @@ class CresNextWSClient:
                 }
             ) as response:
                 if response.status == 200:
+                    # print all response headers for debugging
                     token = response.headers.get("CREST-XSRF-TOKEN")
                     if token:
                         logger.debug("Authentication successful")
@@ -202,14 +202,18 @@ class CresNextWSClient:
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
-            cookies = self._http_session.cookie_jar.filter_cookies(URL(self.get_base_endpoint()))
             logger.debug(f"Connecting to WebSocket: {self.get_ws_url()}")
 
-            # Build Cookie header with all cookies for this host
-            cookie_parts = [f"{name}={m.value}" for name, m in cookies.items()] if cookies else []
-            # Append XSRF token if present (server expects it as a cookie on WS)
+            # Add XSRF token to cookie jar if present (server expects it as a cookie on WS)
             if auth_token:
-                cookie_parts.append(f"CREST-XSRF-TOKEN={auth_token}")
+                self._http_session.cookie_jar.update_cookies(
+                    {'CREST-XSRF-TOKEN': auth_token}, 
+                    URL(self.get_base_endpoint())
+                )
+            
+            # Build Cookie header with all cookies for this host
+            cookies = self._http_session.cookie_jar.filter_cookies(URL(self.get_base_endpoint()))
+            cookie_parts = [f"{name}={m.value}" for name, m in cookies.items()] if cookies else []
             headers = {
                 "Origin": self.get_base_endpoint(),
                 "Referer": f"{self.get_auth_endpoint()}",
@@ -244,7 +248,6 @@ class CresNextWSClient:
             logger.error(f"Connection failed: {e}")
             self._connected = False
             return False
-
 
     async def _handle_disconnection(self) -> None:
         """
@@ -481,13 +484,13 @@ class CresNextWSClient:
             logger.error(f"HTTP GET request failed: {e}")
             return None
 
-    async def http_put(self, path: str, data: Union[Dict[str, Any], list, str, int, float]) -> Optional[Dict[str, Any]]:
+    async def http_post(self, path: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Make an HTTP PUT request to the connected/authenticated server.
+        Make an HTTP POST request to the connected/authenticated server.
 
         Args:
             path (str): The path to request (e.g., '/api/config', '/device/settings')
-            data: The data to send in the PUT request. Can be a dict, list, string, float, or integer.
+            data: The data to send in the post request. Can be a dict, list, string, float, or integer.
 
         Returns:
             Dict[str, Any]: The response data as a dictionary if successful, None otherwise
@@ -499,35 +502,17 @@ class CresNextWSClient:
         if not self._connected or not self._http_session:
             raise RuntimeError("Client is not connected. Call connect() first.")
 
-        # Validate and prepare data based on type
-        if isinstance(data, (dict, list)):
-            # For dict and list, send as JSON
-            json_data = data
-            request_data = None
-            content_type = 'application/json'
-        elif isinstance(data, str):
-            # For string, send as text
-            json_data = None
-            request_data = data
-            content_type = 'text/plain'
-        elif isinstance(data, (int, float)):
-            # For numbers, convert to string and send as text
-            json_data = None
-            request_data = str(data)
-            content_type = 'text/plain'
-        else:
-            raise TypeError(f"Unsupported data type: {type(data)}. Must be dict, list, string, float, or integer.")
-
         try:
             # Construct full URL
             url = f"{self.get_base_endpoint()}{path}"
-            logger.error(f"Making HTTP PUT request to: {url}")
+            logger.debug(f"Making HTTP post request to: {url}")
 
-            # Prepare headers
-            headers = {'Content-Type': content_type}
-
-            # Make the PUT request
-            async with self._http_session.put(url, json=json_data, data=request_data, headers=headers) as response:
+            # Prepare headers - start with Content-Type
+            cookies = self._http_session.cookie_jar.filter_cookies(URL(self.get_base_endpoint()))
+            headers = {'X-CREST-XSRF-TOKEN': cookies['CREST-XSRF-TOKEN'].value}
+            
+            # Make the post request
+            async with self._http_session.post(url, json=data, headers=headers) as response:
                 # Try to parse response
                 response_content_type = response.headers.get('Content-Type', '').lower()
                 
@@ -535,19 +520,19 @@ class CresNextWSClient:
                     # Success status codes
                     if 'application/json' in response_content_type:
                         response_data = await response.json()
-                        logger.debug(f"HTTP PUT successful: {response.status}")
+                        logger.debug(f"HTTP post successful: {response.status}")
                         return response_data
                     else:
                         # For non-JSON responses, return text content in a dict
                         text = await response.text()
-                        logger.debug(f"HTTP PUT successful (non-JSON): {response.status}")
+                        logger.debug(f"HTTP post successful (non-JSON): {response.status}")
                         return {
                             'content': text,
                             'content_type': response_content_type,
                             'status': response.status
                         }
                 else:
-                    logger.warning(f"HTTP PUT failed with status {response.status}")
+                    logger.warning(f"HTTP post failed with status {response.status}")
                     return {
                         'error': f"HTTP {response.status}",
                         'status': response.status,
@@ -555,7 +540,7 @@ class CresNextWSClient:
                     }
 
         except Exception as e:
-            logger.error(f"HTTP PUT request failed: {e}")
+            logger.error(f"HTTP post request failed: {e}")
             return None
 
     async def __aenter__(self) -> "CresNextWSClient":
