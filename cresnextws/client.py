@@ -52,7 +52,7 @@ class ClientConfig:
     auth_path: str = "/userlogin.html"  # REST auth path
     logout_path: str = "/logout"  # REST logout path
     websocket_path: str = "/websockify"  # WebSocket path
-    ws_ping_interval: float = 30.0  # Ping every 30 seconds
+    ws_ping_interval: float = 10.0  # Ping every 30 seconds
     reconnect_delay: float = 5.0  # Wait 5 seconds before reconnect
 
 
@@ -232,8 +232,8 @@ class CresNextWSClient:
                     )
                 ],
                 ping_interval=self.config.ws_ping_interval,
-                ping_timeout=10,
-                close_timeout=10,
+                ping_timeout=5,
+                close_timeout=5,
                 ssl=ssl_context,
             )
 
