@@ -8,7 +8,7 @@ with Crestron CresNext WebSocket API.
 import asyncio
 import json
 import logging
-from typing import Optional, Dict, Any, Type, Union
+from typing import Optional, Dict, Any, Type
 
 import aiohttp
 import websockets
