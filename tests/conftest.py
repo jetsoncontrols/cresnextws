@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -85,11 +86,31 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Enable integration tests that connect to real systems",
     )
+    group.addoption(
+        "--integration-delay",
+        action="store",
+        type=float,
+        default=1.0,
+        help="Delay in seconds between integration tests (default: 1.0)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     # Declare markers to avoid PytestUnknownMarkWarning
     config.addinivalue_line("markers", "integration: marks tests that hit real systems")
+
+
+def pytest_runtest_teardown(item: pytest.Item, nextitem: Optional[pytest.Item]) -> None:
+    """Add delay between integration tests if configured."""
+    # Check if the current test is an integration test
+    if item.get_closest_marker("integration") is not None:
+        # Get the integration delay setting
+        delay = item.config.getoption("--integration-delay")
+        if delay > 0 and nextitem is not None:
+            # Only add delay if there's a next test to run
+            # Check if the next test is also an integration test
+            if nextitem.get_closest_marker("integration") is not None:
+                time.sleep(delay)
 
 
 def _env_substitute(value: Any) -> Any:

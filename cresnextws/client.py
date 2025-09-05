@@ -493,7 +493,7 @@ class CresNextWSClient:
 
         Args:
             path (str): The path to request (e.g., '/Device/Ethernet/HostName')
-            data: The data to send in the post request. Can be a dict, list, string, float, or integer.
+            data: The data to send in the post request. Must be a Dict.
 
         Returns:
             Dict[str, Any]: The response data as a dictionary if successful, None otherwise
@@ -502,6 +502,10 @@ class CresNextWSClient:
             RuntimeError: If not connected or no active HTTP session
             TypeError: If data type is not supported
         """
+        # Validate data type
+        if not isinstance(data, (dict)):
+            raise TypeError("Unsupported data type. Data must be a dict.")
+        
         if not self._connected or not self._http_session:
             raise RuntimeError("Client is not connected. Call connect() first.")
 
@@ -570,6 +574,37 @@ class CresNextWSClient:
             
         except Exception as e:
             logger.error(f"Failed to send WebSocket GET request for {path}: {e}")
+            raise
+
+    async def ws_post(self, payload: Dict[str, Any]) -> None:
+        """
+        Send a WebSocket POST request with the specified payload.
+        
+        This function sends a dictionary payload as JSON over the WebSocket connection.
+        No direct response is returned - any response data will arrive later through the 
+        WebSocket receive loop and can be retrieved using next_message().
+        
+        Args:
+            payload (Dict[str, Any]): The data to send as JSON (e.g., {"path": "/Device/Config", "value": "data"})
+            
+        Raises:
+            RuntimeError: If not connected to WebSocket
+            TypeError: If payload is not a dictionary
+        """
+        if not self._connected or not self._websocket:
+            raise RuntimeError("WebSocket is not connected. Call connect() first.")
+            
+        if not isinstance(payload, dict):
+            raise TypeError("Payload must be a dictionary")
+            
+        try:
+            json_payload = json.dumps(payload)
+            logger.debug(f"Sending WebSocket POST request with payload: {json_payload}")
+            await self._websocket.send(json_payload)
+            logger.debug("WebSocket POST request sent successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to send WebSocket POST request: {e}")
             raise
 
     async def __aenter__(self) -> "CresNextWSClient":
