@@ -5,7 +5,7 @@ in tests/services.json (or another file specified via --services-file).
 Enable with: pytest --run-integration --systems all
 or select specific systems: pytest --run-integration --systems local_sim
 
-pytest -m integration --run-integration --systems oakforest_4zsp tests/test_integration.py::test_ws_get_device_hostname -v
+pytest -m integration --run-integration --systems oakforest_4zsp tests/test_integration.py::test_ws_get_device_model -vs
 """
 
 import pytest
@@ -149,13 +149,13 @@ async def test_http_post_update_hostname(client):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_ws_get_device_hostname(client):
-    """Test WebSocket GET request to retrieve device hostname via ws_get method."""
+async def test_ws_get_device_model(client):
+    """Test WebSocket GET request to retrieve device model name via ws_get method."""
     import asyncio
     
-    # Send a WebSocket GET request for the hostname
-    await client.ws_get("/Device/Ethernet/HostName")
-    print("WebSocket GET request sent for /Device/Ethernet/HostName")
+    # Send a WebSocket GET request for the model name
+    await client.ws_get("/Device/DeviceInfo/Model")
+    print("WebSocket GET request sent for /Device/DeviceInfo/Model")
     
     # Listen for the response on the WebSocket
     # We'll wait up to 10 seconds for a response
@@ -163,7 +163,7 @@ async def test_ws_get_device_hostname(client):
     start_time = asyncio.get_event_loop().time()
     
     response_received = False
-    hostname_response = None
+    model_response = None
     
     while not response_received and (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
         try:
@@ -173,15 +173,15 @@ async def test_ws_get_device_hostname(client):
             if message is not None:
                 print(f"Received WebSocket message: {message}")
                 
-                # Check if this message contains the hostname response
-                # Expected structure: {"Device":{"Ethernet":{"HostName":"[value]"}}}
+                # Check if this message contains the model response
+                # Expected structure: {"Device":{"DeviceInfo":{"Model":"[value]"}}}
                 if (isinstance(message, dict) and 
                     "Device" in message and 
                     isinstance(message["Device"], dict) and
-                    "Ethernet" in message["Device"] and
-                    isinstance(message["Device"]["Ethernet"], dict) and
-                    "HostName" in message["Device"]["Ethernet"]):
-                    hostname_response = message
+                    "DeviceInfo" in message["Device"] and
+                    isinstance(message["Device"]["DeviceInfo"], dict) and
+                    "Model" in message["Device"]["DeviceInfo"]):
+                    model_response = message
                     response_received = True
                     break
                     
@@ -192,20 +192,20 @@ async def test_ws_get_device_hostname(client):
             pytest.fail(f"Error receiving WebSocket message: {e}")
     
     # Verify we received the expected response
-    assert response_received, f"No hostname response received via WebSocket within {timeout_seconds} seconds"
-    assert hostname_response is not None, "Hostname response should not be None"
+    assert response_received, f"No model response received via WebSocket within {timeout_seconds} seconds"
+    assert model_response is not None, "Model response should not be None"
     
     # Verify the response structure and content
-    assert "Device" in hostname_response
-    assert "Ethernet" in hostname_response["Device"]
-    assert "HostName" in hostname_response["Device"]["Ethernet"]
+    assert "Device" in model_response
+    assert "DeviceInfo" in model_response["Device"]
+    assert "Model" in model_response["Device"]["DeviceInfo"]
     
-    # Verify that the hostname value is a string and not empty
-    hostname = hostname_response["Device"]["Ethernet"]["HostName"]
-    assert isinstance(hostname, str), f"Hostname should be a string, got {type(hostname)}"
-    assert len(hostname) > 0, "Hostname should not be empty"
+    # Verify that the model value is a string and not empty
+    model = model_response["Device"]["DeviceInfo"]["Model"]
+    assert isinstance(model, str), f"Model should be a string, got {type(model)}"
+    assert len(model) > 0, "Model should not be empty"
     
-    print(f"✓ Successfully received hostname via WebSocket: {hostname}")
+    print(f"✓ Successfully received model via WebSocket: {model}")
 
 
 @pytest.mark.integration

@@ -61,7 +61,7 @@ def test_client_default_urls():
 
     assert client.config.auth_path == "/userlogin.html"
     assert client.config.websocket_path == "/websockify"
-    assert client.config.ws_ping_interval == 30.0
+    assert client.config.ws_ping_interval == 10.0
     assert client.config.reconnect_delay == 5.0
 
 
@@ -82,7 +82,7 @@ async def test_http_put_not_connected():
     client = CresNextWSClient(config)
 
     with pytest.raises(RuntimeError, match="Client is not connected"):
-        await client.http_put("/test/path", {"key": "value"})
+        await client.http_post("/test/path", {"key": "value"})
 
 
 @pytest.mark.asyncio
@@ -95,4 +95,4 @@ async def test_http_put_data_types():
     with pytest.raises(TypeError, match="Unsupported data type"):
         # Using Any to bypass type checking for test purposes
         invalid_data: Any = object()
-        await client.http_put("/test/path", invalid_data)
+        await client.http_post("/test/path", invalid_data)
