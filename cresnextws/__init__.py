@@ -10,9 +10,12 @@ __email__ = ""
 __description__ = "Crestron CresNext WebSocket API Client"
 
 from .client import CresNextWSClient, ClientConfig
+from .data_event_manager import DataEventManager, Subscription
 
 __all__ = [
     "CresNextWSClient",
     "ClientConfig",
+    "DataEventManager", 
+    "Subscription",
     "__version__",
 ]
