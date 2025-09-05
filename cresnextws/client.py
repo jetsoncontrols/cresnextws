@@ -216,13 +216,17 @@ class CresNextWSClient:
             cookie_parts = [f"{name}={m.value}" for name, m in cookies.items()] if cookies else []
             headers = {
                 "Origin": self.get_base_endpoint(),
-                "Referer": f"{self.get_auth_endpoint()}",
+                # "Referer": f"{self.get_auth_endpoint()}",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
+                'X-CREST-XSRF-TOKEN': cookies['CREST-XSRF-TOKEN'].value
             }
             if cookie_parts:
                 headers["Cookie"] = "; ".join(cookie_parts)
 
             self._websocket = await websockets.connect(
                 self.get_ws_url(),
+                ssl=ssl_context,
                 additional_headers=headers,
                 extensions=[
                     ClientPerMessageDeflateFactory(
@@ -234,7 +238,6 @@ class CresNextWSClient:
                 ping_interval=self.config.ws_ping_interval,
                 ping_timeout=5,
                 close_timeout=5,
-                ssl=ssl_context,
             )
 
             self._connected = True
@@ -489,7 +492,7 @@ class CresNextWSClient:
         Make an HTTP POST request to the connected/authenticated server.
 
         Args:
-            path (str): The path to request (e.g., '/api/config', '/device/settings')
+            path (str): The path to request (e.g., '/Device/Ethernet/HostName')
             data: The data to send in the post request. Can be a dict, list, string, float, or integer.
 
         Returns:
@@ -542,6 +545,32 @@ class CresNextWSClient:
         except Exception as e:
             logger.error(f"HTTP post request failed: {e}")
             return None
+
+    async def ws_get(self, path: str) -> None:
+        """
+        Send a WebSocket GET request for the specified path.
+        
+        This function sends a request for data at the given path via the WebSocket connection.
+        No direct response is returned - the requested data will arrive later through the 
+        WebSocket receive loop and can be retrieved using next_message().
+        
+        Args:
+            path (str): The path to request data from (e.g., "/Device/DiscoveryConfig/DiscoveryAgent")
+            
+        Raises:
+            RuntimeError: If not connected to WebSocket
+        """
+        if not self._connected or not self._websocket:
+            raise RuntimeError("WebSocket is not connected. Call connect() first.")
+            
+        try:
+            logger.debug(f"Sending WebSocket GET request for path: {path}")
+            await self._websocket.send(path)
+            logger.debug(f"WebSocket GET request sent successfully for: {path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send WebSocket GET request for {path}: {e}")
+            raise
 
     async def __aenter__(self) -> "CresNextWSClient":
         """Async context manager entry."""

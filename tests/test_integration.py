@@ -4,6 +4,8 @@ in tests/services.json (or another file specified via --services-file).
 
 Enable with: pytest --run-integration --systems all
 or select specific systems: pytest --run-integration --systems local_sim
+
+pytest -m integration --run-integration --systems oakforest_4zsp tests/test_integration.py::test_ws_get_device_hostname -v
 """
 
 import pytest
@@ -147,6 +149,67 @@ async def test_http_post_update_hostname(client):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_ws_get_device_hostname(client):
+    """Test WebSocket GET request to retrieve device hostname via ws_get method."""
+    import asyncio
+    
+    # Send a WebSocket GET request for the hostname
+    await client.ws_get("/Device/Ethernet/HostName")
+    print("WebSocket GET request sent for /Device/Ethernet/HostName")
+    
+    # Listen for the response on the WebSocket
+    # We'll wait up to 10 seconds for a response
+    timeout_seconds = 10
+    start_time = asyncio.get_event_loop().time()
+    
+    response_received = False
+    hostname_response = None
+    
+    while not response_received and (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
+        try:
+            # Wait for the next message with a short timeout
+            message = await client.next_message(timeout=1.0)
+            
+            if message is not None:
+                print(f"Received WebSocket message: {message}")
+                
+                # Check if this message contains the hostname response
+                # Expected structure: {"Device":{"Ethernet":{"HostName":"[value]"}}}
+                if (isinstance(message, dict) and 
+                    "Device" in message and 
+                    isinstance(message["Device"], dict) and
+                    "Ethernet" in message["Device"] and
+                    isinstance(message["Device"]["Ethernet"], dict) and
+                    "HostName" in message["Device"]["Ethernet"]):
+                    hostname_response = message
+                    response_received = True
+                    break
+                    
+        except asyncio.TimeoutError:
+            # No message received in this 1-second window, continue waiting
+            continue
+        except Exception as e:
+            pytest.fail(f"Error receiving WebSocket message: {e}")
+    
+    # Verify we received the expected response
+    assert response_received, f"No hostname response received via WebSocket within {timeout_seconds} seconds"
+    assert hostname_response is not None, "Hostname response should not be None"
+    
+    # Verify the response structure and content
+    assert "Device" in hostname_response
+    assert "Ethernet" in hostname_response["Device"]
+    assert "HostName" in hostname_response["Device"]["Ethernet"]
+    
+    # Verify that the hostname value is a string and not empty
+    hostname = hostname_response["Device"]["Ethernet"]["HostName"]
+    assert isinstance(hostname, str), f"Hostname should be a string, got {type(hostname)}"
+    assert len(hostname) > 0, "Hostname should not be empty"
+    
+    print(f"✓ Successfully received hostname via WebSocket: {hostname}")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_send_command_when_not_connected():
     """Test that sending a command when not connected raises an error."""
     
@@ -162,5 +225,11 @@ async def test_send_command_when_not_connected():
         RuntimeError, match="Client is not connected"
     ):
         await disconnected_client.http_get("/Device")
+        
+    # Also test that ws_get raises an error when not connected
+    with pytest.raises(
+        RuntimeError, match="WebSocket is not connected"
+    ):
+        await disconnected_client.ws_get("/Device/Ethernet/HostName")
 
 
