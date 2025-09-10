@@ -89,31 +89,35 @@ class CresNextWSClient:
             f"(Auto-reconnect: {self.config.auto_reconnect})"
         )
 
-    def get_base_endpoint(self) -> str:
+    def _get_base_endpoint(self) -> str:
         """Return the base URL for the configured host.
 
-        Example: https://{host}
+        Returns:
+            str: Base URL in format 'https://{host}'
         """
         return f"https://{self.config.host}" # :{self.config.port}
     
-    def get_auth_endpoint(self) -> str:
-        """Return the full REST auth endpoint for the configured host.
+    def _get_auth_endpoint(self) -> str:
+        """Return the full REST authentication endpoint for the configured host.
 
-        Example: https://{host}{auth_path}
+        Returns:
+            str: Authentication URL in format 'https://{host}{auth_path}'
         """
-        return f"{self.get_base_endpoint()}{self.config.auth_path}"
+        return f"{self._get_base_endpoint()}{self.config.auth_path}"
 
-    def get_logout_endpoint(self) -> str:
+    def _get_logout_endpoint(self) -> str:
         """Return the full REST logout endpoint for the configured host.
 
-        Example: https://{host}{logout_path}
+        Returns:
+            str: Logout URL in format 'https://{host}{logout_path}'
         """
-        return f"{self.get_base_endpoint()}{self.config.logout_path}"
+        return f"{self._get_base_endpoint()}{self.config.logout_path}"
 
-    def get_ws_url(self) -> str:
+    def _get_ws_url(self) -> str:
         """Return the full WebSocket URL for the configured host.
 
-        Example: wss://{host}{websocket_path} (or ws for non-SSL)
+        Returns:
+            str: WebSocket URL in format 'wss://{host}{websocket_path}'
         """
         return f"wss://{self.config.host}{self.config.websocket_path}" #:{self.config.port}
 
@@ -121,12 +125,16 @@ class CresNextWSClient:
         """
         Authenticate with the CresNext system via REST API to get auth token.
 
+        Performs a two-step authentication process:
+        1. GET request to auth endpoint to obtain TRACKID cookie
+        2. POST request with username/password to get CREST-XSRF-TOKEN
+
         Returns:
-            str: Authentication token if successful, None otherwise
+            Optional[str]: Authentication token (CREST-XSRF-TOKEN) if successful, None otherwise
         """
         try:
             if self._http_session:
-                await self._http_session.get(self.get_logout_endpoint())
+                await self._http_session.get(self._get_logout_endpoint())
             if not self._http_session:
                 ssl_context = ssl.create_default_context()
                 if self.config.ignore_self_signed:
@@ -137,20 +145,20 @@ class CresNextWSClient:
                 self._http_session = aiohttp.ClientSession(
                     connector=connector, cookie_jar=cookie_jar
                 )
-            logger.debug(f"Getting TRACKID cookie from {self.get_auth_endpoint()}")
-            async with self._http_session.get(self.get_auth_endpoint()) as response:
+            logger.debug(f"Getting TRACKID cookie from {self._get_auth_endpoint()}")
+            async with self._http_session.get(self._get_auth_endpoint()) as response:
                 if response.status != 200:
                     logger.error(
                         f"Initial auth request failed with status {response.status}"
                     )
                     return None
 
-            logger.debug(f"Authenticating with {self.get_auth_endpoint()}")
+            logger.debug(f"Authenticating with {self._get_auth_endpoint()}")
             async with self._http_session.post(
-                self.get_auth_endpoint(),
+                self._get_auth_endpoint(),
                 headers={
-                    "Origin": self.get_base_endpoint(),
-                    "Referer": f"{self.get_auth_endpoint()}",
+                    "Origin": self._get_base_endpoint(),
+                    "Referer": f"{self._get_auth_endpoint()}",
                 },
                 data={
                     "login": self.config.username,
@@ -178,6 +186,11 @@ class CresNextWSClient:
         """
         Connect to the CresNext WebSocket API.
 
+        Establishes a complete connection by:
+        1. Authenticating via REST API to get auth token
+        2. Opening WebSocket connection with proper headers and SSL context
+        3. Starting background receive loop task
+
         Returns:
             bool: True if connection successful, False otherwise
         """
@@ -202,21 +215,21 @@ class CresNextWSClient:
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
-            logger.debug(f"Connecting to WebSocket: {self.get_ws_url()}")
+            logger.debug(f"Connecting to WebSocket: {self._get_ws_url()}")
 
             # Add XSRF token to cookie jar if present (server expects it as a cookie on WS)
             if auth_token:
                 self._http_session.cookie_jar.update_cookies(
                     {'CREST-XSRF-TOKEN': auth_token}, 
-                    URL(self.get_base_endpoint())
+                    URL(self._get_base_endpoint())
                 )
             
             # Build Cookie header with all cookies for this host
-            cookies = self._http_session.cookie_jar.filter_cookies(URL(self.get_base_endpoint()))
+            cookies = self._http_session.cookie_jar.filter_cookies(URL(self._get_base_endpoint()))
             cookie_parts = [f"{name}={m.value}" for name, m in cookies.items()] if cookies else []
             headers = {
-                "Origin": self.get_base_endpoint(),
-                # "Referer": f"{self.get_auth_endpoint()}",
+                "Origin": self._get_base_endpoint(),
+                # "Referer": f"{self._get_auth_endpoint()}",
                 "Accept-Encoding": "gzip, deflate, br",
                 "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
                 'X-CREST-XSRF-TOKEN': cookies['CREST-XSRF-TOKEN'].value
@@ -225,7 +238,7 @@ class CresNextWSClient:
                 headers["Cookie"] = "; ".join(cookie_parts)
 
             self._websocket = await websockets.connect(
-                self.get_ws_url(),
+                self._get_ws_url(),
                 ssl=ssl_context,
                 additional_headers=headers,
                 extensions=[
@@ -255,6 +268,9 @@ class CresNextWSClient:
     async def _handle_disconnection(self) -> None:
         """
         Handle unexpected disconnection and attempt reconnection if enabled.
+        
+        Cleans up the current connection and starts the reconnection loop
+        if auto_reconnect is enabled in the configuration.
         """
         
         logger.info("Connection lost")
@@ -272,6 +288,9 @@ class CresNextWSClient:
     async def _reconnect_loop(self) -> None:
         """
         Background task to handle automatic reconnection.
+        
+        Continuously attempts to reconnect at intervals specified by
+        config.reconnect_delay until successful or auto_reconnect is disabled.
         """
         try:
             while self.config.auto_reconnect and not self._connected:
@@ -299,6 +318,8 @@ class CresNextWSClient:
     async def _cleanup_connection(self) -> None:
         """
         Clean up WebSocket connection and background tasks.
+        
+        Cancels the receive task and closes the WebSocket connection safely.
         """
         # Cancel receive task
         if self._recv_task and not self._recv_task.done():
@@ -320,9 +341,11 @@ class CresNextWSClient:
     async def _recv_loop(self) -> None:
         """Background task that receives messages from the WebSocket.
 
-        - Parses JSON text frames into Python objects and enqueues them.
+        Continuously listens for messages and processes them:
+        - Parses JSON text frames into Python objects and enqueues them
         - Binary frames are logged and ignored
-        - On error/close, triggers disconnect handling if auto_reconnect is enabled.
+        - Handles incomplete JSON messages by buffering
+        - On error/close, triggers disconnect handling if auto_reconnect is enabled
         """
         buffer = ""
         try:
@@ -364,10 +387,10 @@ class CresNextWSClient:
         """Await the next inbound message from the receive loop.
 
         Args:
-            timeout: Optional seconds to wait before returning None.
+            timeout (Optional[float]): Optional timeout in seconds to wait before returning None
 
         Returns:
-            The next message dict, or None on timeout.
+            Optional[Dict[str, Any]]: The next message dictionary, or None on timeout
         """
         try:
             if timeout is not None:
@@ -379,6 +402,12 @@ class CresNextWSClient:
     async def disconnect(self) -> None:
         """
         Disconnect from the CresNext WebSocket API.
+        
+        Performs a clean shutdown by:
+        1. Cancelling any active reconnection tasks
+        2. Cleaning up WebSocket connection and background tasks
+        3. Closing the HTTP session
+        4. Resetting connection state
         """
         if not self._connected:
             logger.debug("Already disconnected")
@@ -427,7 +456,12 @@ class CresNextWSClient:
             path (str): The path to request (e.g., '/api/status', '/device/info')
 
         Returns:
-            Dict[str, Any]: The response data as a dictionary if successful, None otherwise
+            Optional[Dict[str, Any]]: Response dictionary containing:
+                - 'content': Response data (parsed JSON or text)
+                - 'content_type': Response content type
+                - 'status': HTTP status code
+                - 'error': Error message (if request failed)
+                Returns None if request completely failed
 
         Raises:
             RuntimeError: If not connected or no active HTTP session
@@ -437,7 +471,7 @@ class CresNextWSClient:
 
         try:
             # Construct full URL
-            url = f"{self.get_base_endpoint()}{path}"
+            url = f"{self._get_base_endpoint()}{path}"
             logger.error(f"Making HTTP GET request to: {url}")
 
             async with self._http_session.get(url) as response:
@@ -493,14 +527,20 @@ class CresNextWSClient:
 
         Args:
             path (str): The path to request (e.g., '/Device/Ethernet/HostName')
-            data: The data to send in the post request. Must be a Dict.
+            data (Dict[str, Any]): The data to send in the POST request as JSON
 
         Returns:
-            Dict[str, Any]: The response data as a dictionary if successful, None otherwise
+            Optional[Dict[str, Any]]: Response dictionary containing:
+                - 'content': Response data (for non-JSON responses)
+                - 'content_type': Response content type
+                - 'status': HTTP status code
+                - 'error': Error message (if request failed)
+                For JSON responses, returns the parsed JSON directly
+                Returns None if request completely failed
 
         Raises:
             RuntimeError: If not connected or no active HTTP session
-            TypeError: If data type is not supported
+            TypeError: If data is not a dictionary
         """
         # Validate data type
         if not isinstance(data, (dict)):
@@ -511,11 +551,11 @@ class CresNextWSClient:
 
         try:
             # Construct full URL
-            url = f"{self.get_base_endpoint()}{path}"
+            url = f"{self._get_base_endpoint()}{path}"
             logger.debug(f"Making HTTP post request to: {url}")
 
             # Prepare headers - start with Content-Type
-            cookies = self._http_session.cookie_jar.filter_cookies(URL(self.get_base_endpoint()))
+            cookies = self._http_session.cookie_jar.filter_cookies(URL(self._get_base_endpoint()))
             headers = {'X-CREST-XSRF-TOKEN': cookies['CREST-XSRF-TOKEN'].value}
             
             # Make the post request
@@ -608,7 +648,14 @@ class CresNextWSClient:
             raise
 
     async def __aenter__(self) -> "CresNextWSClient":
-        """Async context manager entry."""
+        """
+        Async context manager entry.
+        
+        Automatically connects to the WebSocket when entering the context.
+        
+        Returns:
+            CresNextWSClient: The connected client instance
+        """
         await self.connect()
         return self
 
@@ -618,5 +665,14 @@ class CresNextWSClient:
         exc_val: Optional[BaseException],
         exc_tb: Optional[object],
     ) -> None:
-        """Async context manager exit."""
+        """
+        Async context manager exit.
+        
+        Automatically disconnects from the WebSocket when exiting the context.
+        
+        Args:
+            exc_type (Optional[Type[BaseException]]): Exception type if an exception occurred
+            exc_val (Optional[BaseException]]): Exception value if an exception occurred  
+            exc_tb (Optional[object]): Exception traceback if an exception occurred
+        """
         await self.disconnect()
