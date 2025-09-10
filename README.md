@@ -22,7 +22,7 @@ pip install .
 
 ## Quick Start
 
-### Create a Client with Configuration
+### Basic HTTP Operations
 
 ```python
 import asyncio
@@ -32,9 +32,9 @@ async def main():
     # Create configuration (required)
     config = ClientConfig(
         host="your-cresnext-host.local",
-        auto_reconnect=True,  # Enable automatic reconnection
         username="your_username",
         password="your_password",
+        auto_reconnect=True  # Enable automatic reconnection
     )
     
     # Create client instance with config
@@ -43,9 +43,14 @@ async def main():
     # Connect to the system
     await client.connect()
     
-    # Send a command
-    response = await client.send_command("get_status")
-    print(f"Response: {response}")
+    # HTTP GET request
+    response = await client.http_get("/Device/Ethernet/HostName")
+    print(f"Hostname: {response}")
+    
+    # HTTP POST request (update configuration)
+    data = {"Device": {"Ethernet": {"HostName": "new-hostname"}}}
+    response = await client.http_post("/Device/Ethernet/HostName", data)
+    print(f"Update response: {response}")
     
     # Disconnect when done
     await client.disconnect()
@@ -54,26 +59,186 @@ async def main():
 asyncio.run(main())
 ```
 
-## Using Context Manager
+### WebSocket Operations
 
 ```python
 import asyncio
 from cresnextws import CresNextWSClient, ClientConfig
 
 async def main():
-    # Using configuration object (required)
     config = ClientConfig(
         host="your-cresnext-host.local",
-        auto_reconnect=True,
         username="your_username",
-        password="your_password",
+        password="your_password"
     )
+    
     async with CresNextWSClient(config) as client:
-        response = await client.send_command("get_status")
-        print(f"Response: {response}")
+        # WebSocket GET - subscribe to data updates
+        await client.ws_get("/Device/DeviceInfo/Model")
+        
+        # WebSocket POST - send configuration updates
+        data = {"Device": {"Config": {"SomeValue": "new_value"}}}
+        await client.ws_post(data)
+        
+        # Listen for incoming messages
+        message = await client.next_message(timeout=5.0)
+        print(f"Received: {message}")
 
 asyncio.run(main())
 ```
+
+### DataEventManager - Real-time Monitoring
+
+The `DataEventManager` provides automatic monitoring of WebSocket messages with path-based subscriptions:
+
+```python
+import asyncio
+from cresnextws import CresNextWSClient, ClientConfig, DataEventManager
+
+async def main():
+    config = ClientConfig(
+        host="your-cresnext-host.local",
+        username="your_username",
+        password="your_password"
+    )
+    
+    client = CresNextWSClient(config)
+    await client.connect()
+    
+    # Create data event manager
+    data_manager = DataEventManager(client)
+    
+    # Define callback function
+    def on_device_update(path: str, data):
+        print(f"Device updated: {path} = {data}")
+    
+    def on_network_change(path: str, data):
+        print(f"Network change: {path} = {data}")
+    
+    # Subscribe to different data paths
+    data_manager.subscribe("/Device/DeviceInfo/*", on_device_update)
+    data_manager.subscribe("/Device/Network/*", on_network_change)
+    
+    # Start monitoring
+    await data_manager.start_monitoring()
+    
+    # Request data to trigger callbacks
+    await client.ws_get("/Device/DeviceInfo/Model")
+    await client.ws_get("/Device/Network/Interface")
+    
+    # Monitor for 30 seconds
+    await asyncio.sleep(30)
+    
+    # Clean up
+    await data_manager.stop_monitoring()
+    await client.disconnect()
+
+asyncio.run(main())
+```
+
+#### Path Pattern Matching
+
+The DataEventManager supports flexible path matching:
+
+- **Exact match**: `/Device/Config` - matches only that specific path
+- **Wildcard match**: `/Device/*` - matches any direct child of `/Device/`
+- **Child matching**: `/Device/Config` with `match_children=True` - matches the path and all sub-paths
+
+```python
+# Examples of path patterns
+data_manager.subscribe("/Device/Config", callback)                    # Exact match
+data_manager.subscribe("/Device/*", callback)                         # Wildcard
+data_manager.subscribe("/Device/Config", callback, match_children=True)  # Include children
+```
+
+#### Context Manager Usage
+
+```python
+async def monitor_with_context():
+    config = ClientConfig(host="your-host.local", username="admin", password="password")
+    
+    async with CresNextWSClient(config) as client:
+        async with DataEventManager(client) as data_manager:
+            # Add subscriptions
+            data_manager.subscribe("/Device/*", lambda path, data: print(f"{path}: {data}"))
+            
+            # Request data
+            await client.ws_get("/Device/Info")
+            
+            # Monitor for a while
+            await asyncio.sleep(10)
+            
+    # Automatic cleanup when exiting context
+
+asyncio.run(monitor_with_context())
+```
+
+## API Reference
+
+### CresNextWSClient Methods
+
+#### Connection Management
+- `await client.connect()` - Connect to the CresNext system
+- `await client.disconnect()` - Disconnect from the system
+- `client.connected` - Check connection status
+
+#### HTTP Operations
+- `await client.http_get(path)` - Send HTTP GET request
+- `await client.http_post(path, data)` - Send HTTP POST request with JSON data
+
+#### WebSocket Operations  
+- `await client.ws_get(path)` - Subscribe to WebSocket data updates for a path
+- `await client.ws_post(data)` - Send data via WebSocket
+- `await client.next_message(timeout=None)` - Get next WebSocket message
+
+### DataEventManager Methods
+
+#### Subscription Management
+- `subscribe(path_pattern, callback, match_children=True)` - Add subscription
+- `unsubscribe(subscription_id)` - Remove subscription
+- `clear_subscriptions()` - Remove all subscriptions
+- `get_subscriptions()` - List current subscriptions
+
+#### Monitoring Control
+- `await start_monitoring()` - Begin monitoring WebSocket messages
+- `await stop_monitoring()` - Stop monitoring
+
+### Common API Paths
+
+Based on integration testing, common device paths include:
+
+```python
+# Device Information
+"/Device/DeviceInfo/Model"
+"/Device/DeviceInfo/SerialNumber" 
+"/Device/DeviceInfo/FirmwareVersion"
+
+# Network Configuration
+"/Device/Ethernet/HostName"
+"/Device/Ethernet/IPAddress"
+"/Device/Ethernet/MACAddress"
+
+# Device Configuration
+"/Device/Config/*"
+"/Device/Network/*"
+"/Device/State/*"
+```
+
+## Examples
+
+For comprehensive examples, see `examples.py` in the repository:
+
+```bash
+python3 examples.py
+```
+
+The examples demonstrate:
+- Basic HTTP and WebSocket operations
+- DataEventManager usage with subscriptions
+- Context manager patterns
+- Error handling and cleanup
+- Batch operations
+- Real-time device monitoring
 
 ## Development
 
@@ -151,10 +316,14 @@ mypy cresnextws/
 
 ## Features
 
-- Async/await support for non-blocking operations
-- Context manager support for automatic connection management
-- Type hints for better development experience
-- Comprehensive logging support
+- **Async/await support** for non-blocking operations
+- **HTTP and WebSocket APIs** for comprehensive device interaction
+- **DataEventManager** for real-time monitoring with path-based subscriptions
+- **Context manager support** for automatic connection management
+- **Type hints** for better development experience
+- **Comprehensive logging** support
+- **Automatic reconnection** capabilities
+- **Flexible path pattern matching** with wildcard and child path support
 - Easy-to-use API for Crestron CresNext systems
 
 ## Requirements
