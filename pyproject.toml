@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "cresnextws"
 version = "0.1.0"
 authors = [
-    {name = "Jetson Controls"},
+    {name = "Scott Shanafelt"},
 ]
 description = "Crestron CresNext WebSocket API Client"
 readme = "README.md"
