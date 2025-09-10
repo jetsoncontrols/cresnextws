@@ -9,7 +9,8 @@ pytest -m integration --run-integration --systems oakforest_4zsp tests/test_inte
 """
 
 import pytest
-from cresnextws import CresNextWSClient
+import asyncio
+from cresnextws import CresNextWSClient, DataEventManager
 
 
 
@@ -375,3 +376,80 @@ async def test_send_command_when_not_connected():
         await disconnected_client.ws_post({"test": "data"})
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_data_event_manager_hostname_subscription(client):
+    """
+    Test that creates a data event manager, subscribes to device hostname path,
+    performs a ws_get to retrieve the hostname, and verifies the response is received
+    via the data event manager.
+    """
+    hostname_path = "/Device/Ethernet/HostName"
+    
+    # Create DataEventManager instance
+    data_manager = DataEventManager(client)
+    
+    # Step 1: Set up event capture for hostname responses
+    received_events = []
+    
+    def hostname_callback(path: str, data):
+        """Callback to capture hostname response events."""
+        print(f"Hostname event received - Path: {path}, Data: {data}")
+        received_events.append({"path": path, "data": data})
+    
+    # Step 2: Subscribe to hostname responses in DataEventManager
+    subscription_id = data_manager.subscribe(hostname_path, hostname_callback)
+    print(f"Subscribed to {hostname_path} with ID: {subscription_id}")
+    
+    try:
+        # Step 3: Start monitoring WebSocket messages
+        await data_manager.start_monitoring()
+        print("Data event manager monitoring started")
+        
+        # Step 4: Request hostname via WebSocket GET
+        # This should immediately return the current hostname value
+        await client.ws_get(hostname_path)
+        print("WebSocket GET request sent for hostname")
+        
+        # Step 5: Wait for the hostname response to arrive via DataEventManager
+        timeout_seconds = 10
+        start_time = asyncio.get_event_loop().time()
+        event_received = False
+        
+        print("Waiting for hostname response event...")
+        while not event_received and (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
+            await asyncio.sleep(0.1)  # Small delay to allow message processing
+            
+            # Check if we received a hostname response event
+            for event in received_events:
+                event_data = event["data"]
+                
+                # Handle different possible data formats
+                hostname_from_event = None
+                if isinstance(event_data, dict):
+                    # Check for full JSON structure: {"Device":{"Ethernet":{"HostName":"value"}}}
+                    if "Device" in event_data and "Ethernet" in event_data["Device"] and "HostName" in event_data["Device"]["Ethernet"]:
+                        hostname_from_event = event_data["Device"]["Ethernet"]["HostName"]
+                    # Check for simplified structure: {"HostName":"value"}
+                    elif "HostName" in event_data:
+                        hostname_from_event = event_data["HostName"]
+                elif isinstance(event_data, str):
+                    hostname_from_event = event_data
+                
+                if hostname_from_event and isinstance(hostname_from_event, str) and len(hostname_from_event) > 0:
+                    event_received = True
+                    print(f"✓ Successfully received hostname response via DataEventManager: {hostname_from_event}")
+                    
+                    # Verify that the hostname value is reasonable
+                    assert isinstance(hostname_from_event, str)
+                    assert len(hostname_from_event) > 0
+                    break
+        
+        if not event_received:
+            pytest.fail(f"Did not receive hostname response event within {timeout_seconds} seconds. Received events: {received_events}")
+        
+    finally:
+        # Step 6: Stop monitoring and clean up
+        await data_manager.stop_monitoring()
+        data_manager.unsubscribe(subscription_id)
+        print("Data event manager monitoring stopped and subscription removed")

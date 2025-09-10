@@ -180,6 +180,36 @@ class DataEventManager:
         
         return False
 
+    def _extract_paths_from_nested_data(self, data: Dict[str, Any], parent_path: str = "") -> List[tuple[str, Any]]:
+        """
+        Recursively extract all paths and their values from nested data.
+        
+        Args:
+            data (Dict[str, Any]): The nested data structure
+            parent_path (str): The parent path (for recursion)
+            
+        Returns:
+            List[tuple[str, Any]]: List of (path, value) tuples
+        """
+        paths = []
+        
+        if not isinstance(data, dict):
+            return [(parent_path, data)] if parent_path else []
+        
+        for key, value in data.items():
+            current_path = f"{parent_path}/{key}" if parent_path else f"/{key}"
+            
+            if isinstance(value, dict):
+                # Add the current path with the dict value
+                paths.append((current_path, value))
+                # Recursively extract nested paths
+                paths.extend(self._extract_paths_from_nested_data(value, current_path))
+            else:
+                # Leaf node - add the path with its value
+                paths.append((current_path, value))
+        
+        return paths
+
     def _process_message(self, message: Dict[str, Any]) -> None:
         """
         Process an incoming WebSocket message and trigger matching callbacks.
@@ -188,46 +218,54 @@ class DataEventManager:
             message (Dict[str, Any]): The message received from the WebSocket
         """
         try:
-            # Extract path from message
-            # Different message formats may have path in different locations
-            path = None
-            data = message
+            logger.debug(f"Processing message: {message}")
             
-            # Common patterns for path extraction
-            if isinstance(message, dict):
-                if 'path' in message:
-                    path = message['path']
-                    data = message.get('data', message.get('value', message))
-                elif 'Path' in message:
-                    path = message['Path']
-                    data = message.get('Data', message.get('Value', message))
-                elif len(message) == 1:
-                    # Single key-value pair, use key as path
-                    path = list(message.keys())[0]
-                    data = message[path]
+            # Check if message has explicit path structure first
+            if isinstance(message, dict) and ('path' in message or 'Path' in message):
+                # Handle messages with explicit path
+                path = message.get('path') or message.get('Path')
+                data = message.get('data', message.get('Data', message.get('value', message.get('Value', message))))
+                paths_and_data = [(path, data)]
+            else:
+                # Extract all paths from nested structure
+                # For messages like {'Device': {'Ethernet': {'HostName': 'DM-NAX-4ZSP'}}}
+                paths_and_data = self._extract_paths_from_nested_data(message)
             
-            if path is None:
-                logger.debug(f"Could not extract path from message: {message}")
+            if not paths_and_data:
+                logger.debug(f"No paths could be extracted from message: {message}")
                 return
             
-            # Find matching subscriptions
-            matched_subscriptions = []
-            for sub_id, subscription in self._subscriptions.items():
-                if self._path_matches_pattern(path, subscription):
-                    matched_subscriptions.append((sub_id, subscription))
+            total_matches = 0
             
-            # Trigger callbacks for matching subscriptions
-            for sub_id, subscription in matched_subscriptions:
-                try:
-                    logger.debug(f"Triggering callback for subscription {sub_id} (pattern: {subscription.path_pattern}, path: {path})")
-                    subscription.callback(path, data)
-                except Exception as e:
-                    logger.error(f"Error in callback for subscription {sub_id}: {e}")
+            # Process each extracted path
+            for path, data in paths_and_data:
+                # Ensure path is a string
+                if not isinstance(path, str):
+                    logger.debug(f"Skipping non-string path: {path}")
+                    continue
+                    
+                # Find matching subscriptions for this path
+                matched_subscriptions = []
+                for sub_id, subscription in self._subscriptions.items():
+                    if self._path_matches_pattern(path, subscription):
+                        matched_subscriptions.append((sub_id, subscription))
+                
+                # Trigger callbacks for matching subscriptions
+                for sub_id, subscription in matched_subscriptions:
+                    try:
+                        logger.debug(f"Triggering callback for subscription {sub_id} (pattern: {subscription.path_pattern}, path: {path})")
+                        subscription.callback(path, data)
+                    except Exception as e:
+                        logger.error(f"Error in callback for subscription {sub_id}: {e}")
+                
+                if matched_subscriptions:
+                    logger.debug(f"Path {path} matched {len(matched_subscriptions)} subscriptions")
+                    total_matches += len(matched_subscriptions)
             
-            if matched_subscriptions:
-                logger.debug(f"Processed message for path {path} with {len(matched_subscriptions)} matching subscriptions")
+            if total_matches > 0:
+                logger.debug(f"Processed message with {total_matches} total subscription matches")
             else:
-                logger.debug(f"No subscriptions matched path: {path}")
+                logger.debug("No subscriptions matched any paths in message")
                 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
