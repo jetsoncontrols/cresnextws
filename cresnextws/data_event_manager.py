@@ -220,16 +220,9 @@ class DataEventManager:
         try:
             logger.debug(f"Processing message: {message}")
             
-            # Check if message has explicit path structure first
-            if isinstance(message, dict) and ('path' in message or 'Path' in message):
-                # Handle messages with explicit path
-                path = message.get('path') or message.get('Path')
-                data = message.get('data', message.get('Data', message.get('value', message.get('Value', message))))
-                paths_and_data = [(path, data)]
-            else:
-                # Extract all paths from nested structure
-                # For messages like {'Device': {'Ethernet': {'HostName': 'DM-NAX-4ZSP'}}}
-                paths_and_data = self._extract_paths_from_nested_data(message)
+            # Extract all paths from nested structure
+            # For messages like {'Device': {'Ethernet': {'HostName': 'DM-NAX-4ZSP'}}}
+            paths_and_data = self._extract_paths_from_nested_data(message)
             
             if not paths_and_data:
                 logger.debug(f"No paths could be extracted from message: {message}")

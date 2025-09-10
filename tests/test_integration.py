@@ -10,6 +10,7 @@ pytest -m integration --run-integration --systems oakforest_4zsp tests/test_inte
 
 import pytest
 import asyncio
+from typing import Any
 from cresnextws import CresNextWSClient, DataEventManager
 
 
@@ -453,3 +454,123 @@ async def test_data_event_manager_hostname_subscription(client):
         await data_manager.stop_monitoring()
         data_manager.unsubscribe(subscription_id)
         print("Data event manager monitoring stopped and subscription removed")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_data_event_manager_multiple_subscriptions(client):
+    """Test DataEventManager with multiple path subscriptions for hierarchical data."""
+    import asyncio
+    
+    # Initialize DataEventManager
+    data_manager = DataEventManager(client)
+    
+    # Track received events for each subscription
+    device_events = []
+    ethernet_events = []
+    hostname_events = []
+    
+    # Define callback functions for each subscription level
+    def device_callback(path: str, data: Any):
+        """Callback for /Device subscription."""
+        print(f"Device callback triggered - Path: {path}, Data: {data}")
+        device_events.append({"path": path, "data": data})
+    
+    def ethernet_callback(path: str, data: Any):
+        """Callback for /Device/Ethernet subscription."""
+        print(f"Ethernet callback triggered - Path: {path}, Data: {data}")
+        ethernet_events.append({"path": path, "data": data})
+        
+    def hostname_callback(path: str, data: Any):
+        """Callback for /Device/Ethernet/Hostname subscription."""
+        print(f"Hostname callback triggered - Path: {path}, Data: {data}")
+        hostname_events.append({"path": path, "data": data})
+    
+    # Step 1: Subscribe to the three hierarchical paths
+    device_sub_id = data_manager.subscribe("/Device", device_callback)
+    ethernet_sub_id = data_manager.subscribe("/Device/Ethernet", ethernet_callback)
+    hostname_sub_id = data_manager.subscribe("/Device/Ethernet/HostName", hostname_callback)
+    
+    print(f"Subscribed to /Device with ID: {device_sub_id}")
+    print(f"Subscribed to /Device/Ethernet with ID: {ethernet_sub_id}")
+    print(f"Subscribed to /Device/Ethernet/HostName with ID: {hostname_sub_id}")
+    
+    try:
+        # Step 2: Start monitoring WebSocket messages
+        await data_manager.start_monitoring()
+        print("Data event manager monitoring started")
+        
+        # Step 3: Request hostname via WebSocket GET
+        # This should trigger all three callbacks since they are hierarchical
+        await client.ws_get("/Device/Ethernet/HostName")
+        print("WebSocket GET request sent for /Device/Ethernet/HostName")
+        
+        # Step 4: Wait for events to arrive
+        timeout_seconds = 10
+        start_time = asyncio.get_event_loop().time()
+        
+        print("Waiting for events from all three subscriptions...")
+        while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
+            await asyncio.sleep(0.1)  # Small delay to allow message processing
+            
+            # Check if we have received events for all three subscriptions
+            # We expect at least one event for each subscription
+            if len(device_events) > 0 and len(ethernet_events) > 0 and len(hostname_events) > 0:
+                print("✓ All three subscription callbacks have been triggered")
+                break
+        
+        # Step 5: Verify that all three callbacks received their events
+        assert len(device_events) > 0, f"Device callback was not triggered. Device events: {device_events}"
+        assert len(ethernet_events) > 0, f"Ethernet callback was not triggered. Ethernet events: {ethernet_events}"
+        assert len(hostname_events) > 0, f"Hostname callback was not triggered. Hostname events: {hostname_events}"
+        
+        print(f"✓ Device callback triggered {len(device_events)} time(s)")
+        print(f"✓ Ethernet callback triggered {len(ethernet_events)} time(s)")
+        print(f"✓ Hostname callback triggered {len(hostname_events)} time(s)")
+        
+        # Step 6: Verify event data integrity
+        # All events should contain hostname data in some form
+        for event in device_events:
+            print(f"Device event - Path: {event['path']}, Data type: {type(event['data'])}")
+            assert event['path'] is not None
+            assert event['data'] is not None
+            
+        for event in ethernet_events:
+            print(f"Ethernet event - Path: {event['path']}, Data type: {type(event['data'])}")
+            assert event['path'] is not None
+            assert event['data'] is not None
+            
+        for event in hostname_events:
+            print(f"Hostname event - Path: {event['path']}, Data type: {type(event['data'])}")
+            assert event['path'] is not None
+            assert event['data'] is not None
+            
+            # The hostname-specific callback should receive the hostname value
+            # which could be in various formats depending on the data structure
+            hostname_value = None
+            if isinstance(event['data'], str):
+                hostname_value = event['data']
+            elif isinstance(event['data'], dict) and 'HostName' in event['data']:
+                hostname_value = event['data']['HostName']
+            elif isinstance(event['data'], dict) and 'Device' in event['data']:
+                # Full nested structure
+                device_data = event['data']['Device']
+                if isinstance(device_data, dict) and 'Ethernet' in device_data:
+                    ethernet_data = device_data['Ethernet']
+                    if isinstance(ethernet_data, dict) and 'HostName' in ethernet_data:
+                        hostname_value = ethernet_data['HostName']
+            
+            if hostname_value:
+                assert isinstance(hostname_value, str), f"Hostname value should be a string, got {type(hostname_value)}"
+                assert len(hostname_value) > 0, "Hostname value should not be empty"
+                print(f"✓ Verified hostname value: {hostname_value}")
+        
+        print("✓ All event data integrity checks passed")
+        
+    finally:
+        # Step 7: Stop monitoring and clean up all subscriptions
+        await data_manager.stop_monitoring()
+        data_manager.unsubscribe(device_sub_id)
+        data_manager.unsubscribe(ethernet_sub_id)
+        data_manager.unsubscribe(hostname_sub_id)
+        print("Data event manager monitoring stopped and all subscriptions removed")
