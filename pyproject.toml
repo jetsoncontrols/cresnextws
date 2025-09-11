@@ -44,9 +44,8 @@ dev = [
 "Bug Reports" = "https://github.com/jetsoncontrols/cresnextws/issues"
 "Source" = "https://github.com/jetsoncontrols/cresnextws"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["cresnextws*"]
+[tool.setuptools]
+packages = ["cresnextws"]
 
 [tool.black]
 line-length = 88

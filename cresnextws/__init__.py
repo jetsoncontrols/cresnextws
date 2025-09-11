@@ -6,14 +6,14 @@ A Python library for interacting with Crestron CresNext WebSocket API.
 
 try:
     from importlib.metadata import PackageNotFoundError, metadata
-    
+
     # Get package metadata
     pkg_metadata = metadata("cresnextws")
     __version__ = pkg_metadata["Version"]
     __description__ = pkg_metadata["Summary"]
     __author__ = pkg_metadata.get("Author") or ""
     __email__ = pkg_metadata.get("Author-email") or ""
-    
+
 except (ImportError, PackageNotFoundError):
     # Fallback for development or when package is not installed
     __version__ = "0.0.0"
@@ -27,7 +27,7 @@ from .data_event_manager import DataEventManager, Subscription
 __all__ = [
     "CresNextWSClient",
     "ClientConfig",
-    "DataEventManager", 
+    "DataEventManager",
     "Subscription",
     "__version__",
     "__author__",
