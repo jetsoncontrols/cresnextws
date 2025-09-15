@@ -41,7 +41,7 @@ class ClientConfig:
         ws_ping_interval (float): Interval in seconds for WebSocket ping
             (default: 30.0)
         reconnect_delay (float): Delay in seconds before reconnection attempt
-            (default: 5.0)
+            (default: 1.0)
     """
 
     host: str
@@ -53,7 +53,7 @@ class ClientConfig:
     logout_path: str = "/logout"  # REST logout path
     websocket_path: str = "/websockify"  # WebSocket path
     ws_ping_interval: float = 10.0  # Ping every 30 seconds
-    reconnect_delay: float = 5.0  # Wait 5 seconds before reconnect
+    reconnect_delay: float = 1.0  # Wait 1 second before reconnect
 
 
 class CresNextWSClient:
@@ -95,8 +95,8 @@ class CresNextWSClient:
         Returns:
             str: Base URL in format 'https://{host}'
         """
-        return f"https://{self.config.host}" # :{self.config.port}
-    
+        return f"https://{self.config.host}"  # :{self.config.port}
+
     def _get_auth_endpoint(self) -> str:
         """Return the full REST authentication endpoint for the configured host.
 
@@ -119,7 +119,7 @@ class CresNextWSClient:
         Returns:
             str: WebSocket URL in format 'wss://{host}{websocket_path}'
         """
-        return f"wss://{self.config.host}{self.config.websocket_path}" #:{self.config.port}
+        return f"wss://{self.config.host}{self.config.websocket_path}"  #:{self.config.port}
 
     async def _authenticate(self) -> Optional[str]:
         """
@@ -163,7 +163,7 @@ class CresNextWSClient:
                 data={
                     "login": self.config.username,
                     "passwd": self.config.password,
-                }
+                },
             ) as response:
                 if response.status == 200:
                     # print all response headers for debugging
@@ -171,11 +171,11 @@ class CresNextWSClient:
                     if token:
                         logger.debug("Authentication successful")
                         return token
-                    logger.warning("Authentication response missing CREST-XSRF-TOKEN header")
+                    logger.warning(
+                        "Authentication response missing CREST-XSRF-TOKEN header"
+                    )
                     return None
-                logger.warning(
-                    f"Authentication failed with status {response.status}"
-                )
+                logger.warning(f"Authentication failed with status {response.status}")
                 return None
 
         except Exception as e:
@@ -220,19 +220,22 @@ class CresNextWSClient:
             # Add XSRF token to cookie jar if present (server expects it as a cookie on WS)
             if auth_token:
                 self._http_session.cookie_jar.update_cookies(
-                    {'CREST-XSRF-TOKEN': auth_token}, 
-                    URL(self._get_base_endpoint())
+                    {"CREST-XSRF-TOKEN": auth_token}, URL(self._get_base_endpoint())
                 )
-            
+
             # Build Cookie header with all cookies for this host
-            cookies = self._http_session.cookie_jar.filter_cookies(URL(self._get_base_endpoint()))
-            cookie_parts = [f"{name}={m.value}" for name, m in cookies.items()] if cookies else []
+            cookies = self._http_session.cookie_jar.filter_cookies(
+                URL(self._get_base_endpoint())
+            )
+            cookie_parts = (
+                [f"{name}={m.value}" for name, m in cookies.items()] if cookies else []
+            )
             headers = {
                 "Origin": self._get_base_endpoint(),
                 # "Referer": f"{self._get_auth_endpoint()}",
                 "Accept-Encoding": "gzip, deflate, br",
                 "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
-                'X-CREST-XSRF-TOKEN': cookies['CREST-XSRF-TOKEN'].value
+                "X-CREST-XSRF-TOKEN": cookies["CREST-XSRF-TOKEN"].value,
             }
             if cookie_parts:
                 headers["Cookie"] = "; ".join(cookie_parts)
@@ -268,11 +271,11 @@ class CresNextWSClient:
     async def _handle_disconnection(self) -> None:
         """
         Handle unexpected disconnection and attempt reconnection if enabled.
-        
+
         Cleans up the current connection and starts the reconnection loop
         if auto_reconnect is enabled in the configuration.
         """
-        
+
         logger.info("Connection lost")
         self._connected = False
 
@@ -288,7 +291,7 @@ class CresNextWSClient:
     async def _reconnect_loop(self) -> None:
         """
         Background task to handle automatic reconnection.
-        
+
         Continuously attempts to reconnect at intervals specified by
         config.reconnect_delay until successful or auto_reconnect is disabled.
         """
@@ -318,7 +321,7 @@ class CresNextWSClient:
     async def _cleanup_connection(self) -> None:
         """
         Clean up WebSocket connection and background tasks.
-        
+
         Cancels the receive task and closes the WebSocket connection safely.
         """
         # Cancel receive task
@@ -362,7 +365,7 @@ class CresNextWSClient:
                     else:
                         # Handle other types (bytearray, memoryview) by converting to string
                         buffer += str(raw)
-                
+
                     # Try to parse complete JSON objects from buffer
                     while buffer:
                         try:
@@ -370,7 +373,9 @@ class CresNextWSClient:
                             decoder = json.JSONDecoder()
                             payload, idx = decoder.raw_decode(buffer)
                             await self._inbound_queue.put(payload)
-                            buffer = buffer[idx:].lstrip()  # Remove parsed JSON, skip whitespace
+                            buffer = buffer[
+                                idx:
+                            ].lstrip()  # Remove parsed JSON, skip whitespace
                         except json.JSONDecodeError:
                             # Incomplete JSON, wait for more data
                             break
@@ -383,7 +388,9 @@ class CresNextWSClient:
             if self.config.auto_reconnect:
                 await self._handle_disconnection()
 
-    async def next_message(self, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    async def next_message(
+        self, timeout: Optional[float] = None
+    ) -> Optional[Dict[str, Any]]:
         """Await the next inbound message from the receive loop.
 
         Args:
@@ -394,7 +401,9 @@ class CresNextWSClient:
         """
         try:
             if timeout is not None:
-                return await asyncio.wait_for(self._inbound_queue.get(), timeout=timeout)
+                return await asyncio.wait_for(
+                    self._inbound_queue.get(), timeout=timeout
+                )
             return await self._inbound_queue.get()
         except asyncio.TimeoutError:
             return None
@@ -402,7 +411,7 @@ class CresNextWSClient:
     async def disconnect(self) -> None:
         """
         Disconnect from the CresNext WebSocket API.
-        
+
         Performs a clean shutdown by:
         1. Cancelling any active reconnection tasks
         2. Cleaning up WebSocket connection and background tasks
@@ -429,8 +438,13 @@ class CresNextWSClient:
         # Clean up connection
         await self._cleanup_connection()
 
-        # Close HTTP session
+        # Logout and close HTTP session
         if self._http_session:
+            try:
+                await self._http_session.get(self._get_logout_endpoint())
+                logger.debug("Logout request sent")
+            except Exception as e:
+                logger.debug(f"Error during logout: {e}")
             await self._http_session.close()
             self._http_session = None
 
@@ -477,51 +491,59 @@ class CresNextWSClient:
             async with self._http_session.get(url) as response:
                 if response.status == 200:
                     # Try to parse as JSON first
-                    content_type = response.headers.get('Content-Type', '').lower()
-                    if 'application/json' in content_type:
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    if "application/json" in content_type:
                         data = await response.json()
                         logger.debug(f"HTTP GET successful: {response.status}")
                         return {
-                            'content': data,
-                            'content_type': content_type,
-                            'status': response.status
+                            "content": data,
+                            "content_type": content_type,
+                            "status": response.status,
                         }
                     else:
                         # For non-JSON responses, try to parse as JSON, fallback to text
                         text = await response.text()
-                        text = text.rstrip('\r\n')
-                        
+                        text = text.rstrip("\r\n")
+
                         # Try to parse as JSON even if content-type doesn't indicate it
                         try:
                             json_data = json.loads(text)
-                            logger.debug(f"HTTP GET successful (parsed JSON): {response.status}")
+                            logger.debug(
+                                f"HTTP GET successful (parsed JSON): {response.status}"
+                            )
                             return {
-                                'content': json_data,
-                                'content_type': content_type,
-                                'status': response.status
+                                "content": json_data,
+                                "content_type": content_type,
+                                "status": response.status,
                             }
                         except json.JSONDecodeError:
                             # Not valid JSON, return as text
-                            logger.debug(f"HTTP GET successful (text): {response.status}")
+                            logger.debug(
+                                f"HTTP GET successful (text): {response.status}"
+                            )
                             return {
-                                'content': text,
-                                'content_type': content_type,
-                                'status': response.status
+                                "content": text,
+                                "content_type": content_type,
+                                "status": response.status,
                             }
                 else:
                     logger.warning(f"HTTP GET failed with status {response.status}")
                     return {
-                        'content': await response.text(),
-                        'content_type': response.headers.get('Content-Type', '').lower(),
-                        'error': f"HTTP {response.status}",
-                        'status': response.status
+                        "content": await response.text(),
+                        "content_type": response.headers.get(
+                            "Content-Type", ""
+                        ).lower(),
+                        "error": f"HTTP {response.status}",
+                        "status": response.status,
                     }
 
         except Exception as e:
             logger.error(f"HTTP GET request failed: {e}")
             return None
 
-    async def http_post(self, path: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def http_post(
+        self, path: str, data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         """
         Make an HTTP POST request to the connected/authenticated server.
 
@@ -545,7 +567,7 @@ class CresNextWSClient:
         # Validate data type
         if not isinstance(data, (dict)):
             raise TypeError("Unsupported data type. Data must be a dict.")
-        
+
         if not self._connected or not self._http_session:
             raise RuntimeError("Client is not connected. Call connect() first.")
 
@@ -555,35 +577,41 @@ class CresNextWSClient:
             logger.debug(f"Making HTTP post request to: {url}")
 
             # Prepare headers - start with Content-Type
-            cookies = self._http_session.cookie_jar.filter_cookies(URL(self._get_base_endpoint()))
-            headers = {'X-CREST-XSRF-TOKEN': cookies['CREST-XSRF-TOKEN'].value}
-            
+            cookies = self._http_session.cookie_jar.filter_cookies(
+                URL(self._get_base_endpoint())
+            )
+            headers = {"X-CREST-XSRF-TOKEN": cookies["CREST-XSRF-TOKEN"].value}
+
             # Make the post request
-            async with self._http_session.post(url, json=data, headers=headers) as response:
+            async with self._http_session.post(
+                url, json=data, headers=headers
+            ) as response:
                 # Try to parse response
-                response_content_type = response.headers.get('Content-Type', '').lower()
-                
+                response_content_type = response.headers.get("Content-Type", "").lower()
+
                 if response.status in [200, 201, 204]:
                     # Success status codes
-                    if 'application/json' in response_content_type:
+                    if "application/json" in response_content_type:
                         response_data = await response.json()
                         logger.debug(f"HTTP post successful: {response.status}")
                         return response_data
                     else:
                         # For non-JSON responses, return text content in a dict
                         text = await response.text()
-                        logger.debug(f"HTTP post successful (non-JSON): {response.status}")
+                        logger.debug(
+                            f"HTTP post successful (non-JSON): {response.status}"
+                        )
                         return {
-                            'content': text,
-                            'content_type': response_content_type,
-                            'status': response.status
+                            "content": text,
+                            "content_type": response_content_type,
+                            "status": response.status,
                         }
                 else:
                     logger.warning(f"HTTP post failed with status {response.status}")
                     return {
-                        'error': f"HTTP {response.status}",
-                        'status': response.status,
-                        'content': await response.text()
+                        "error": f"HTTP {response.status}",
+                        "status": response.status,
+                        "content": await response.text(),
                     }
 
         except Exception as e:
@@ -593,25 +621,25 @@ class CresNextWSClient:
     async def ws_get(self, path: str) -> None:
         """
         Send a WebSocket GET request for the specified path.
-        
+
         This function sends a request for data at the given path via the WebSocket connection.
-        No direct response is returned - the requested data will arrive later through the 
+        No direct response is returned - the requested data will arrive later through the
         WebSocket receive loop and can be retrieved using next_message().
-        
+
         Args:
             path (str): The path to request data from (e.g., "/Device/DiscoveryConfig/DiscoveryAgent")
-            
+
         Raises:
             RuntimeError: If not connected to WebSocket
         """
         if not self._connected or not self._websocket:
             raise RuntimeError("WebSocket is not connected. Call connect() first.")
-            
+
         try:
             logger.debug(f"Sending WebSocket GET request for path: {path}")
             await self._websocket.send(path)
             logger.debug(f"WebSocket GET request sent successfully for: {path}")
-            
+
         except Exception as e:
             logger.error(f"Failed to send WebSocket GET request for {path}: {e}")
             raise
@@ -619,30 +647,30 @@ class CresNextWSClient:
     async def ws_post(self, payload: Dict[str, Any]) -> None:
         """
         Send a WebSocket POST request with the specified payload.
-        
+
         This function sends a dictionary payload as JSON over the WebSocket connection.
-        No direct response is returned - any response data will arrive later through the 
+        No direct response is returned - any response data will arrive later through the
         WebSocket receive loop and can be retrieved using next_message().
-        
+
         Args:
             payload (Dict[str, Any]): The data to send as JSON (e.g., {"path": "/Device/Config", "value": "data"})
-            
+
         Raises:
             RuntimeError: If not connected to WebSocket
             TypeError: If payload is not a dictionary
         """
         if not self._connected or not self._websocket:
             raise RuntimeError("WebSocket is not connected. Call connect() first.")
-            
+
         if not isinstance(payload, dict):
             raise TypeError("Payload must be a dictionary")
-            
+
         try:
             json_payload = json.dumps(payload)
             logger.debug(f"Sending WebSocket POST request with payload: {json_payload}")
             await self._websocket.send(json_payload)
             logger.debug("WebSocket POST request sent successfully")
-            
+
         except Exception as e:
             logger.error(f"Failed to send WebSocket POST request: {e}")
             raise
@@ -650,9 +678,9 @@ class CresNextWSClient:
     async def __aenter__(self) -> "CresNextWSClient":
         """
         Async context manager entry.
-        
+
         Automatically connects to the WebSocket when entering the context.
-        
+
         Returns:
             CresNextWSClient: The connected client instance
         """
@@ -667,12 +695,12 @@ class CresNextWSClient:
     ) -> None:
         """
         Async context manager exit.
-        
+
         Automatically disconnects from the WebSocket when exiting the context.
-        
+
         Args:
             exc_type (Optional[Type[BaseException]]): Exception type if an exception occurred
-            exc_val (Optional[BaseException]]): Exception value if an exception occurred  
+            exc_val (Optional[BaseException]]): Exception value if an exception occurred
             exc_tb (Optional[object]): Exception traceback if an exception occurred
         """
         await self.disconnect()

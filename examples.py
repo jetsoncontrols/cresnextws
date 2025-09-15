@@ -142,7 +142,7 @@ async def config_example():
         password="password",
         auto_reconnect=True,
         ws_ping_interval=15.0,
-        reconnect_delay=3.0,
+        reconnect_delay=2.0,
         auth_path="/userlogin.html",
         websocket_path="/websockify"
     )

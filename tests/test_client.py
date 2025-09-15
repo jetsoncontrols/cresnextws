@@ -62,7 +62,7 @@ def test_client_default_urls():
     assert client.config.auth_path == "/userlogin.html"
     assert client.config.websocket_path == "/websockify"
     assert client.config.ws_ping_interval == 10.0
-    assert client.config.reconnect_delay == 5.0
+    assert client.config.reconnect_delay == 1.0
 
 
 @pytest.mark.asyncio

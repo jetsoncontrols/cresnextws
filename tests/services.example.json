@@ -14,7 +14,7 @@
     "auth_path": "/userlogin.html",
     "websocket_path": "/websockify",
     "ws_ping_interval": 30.0,
-    "reconnect_delay": 5.0
+    "reconnect_delay": 1.0
   },
   "systems": {
     "local_sim": {
