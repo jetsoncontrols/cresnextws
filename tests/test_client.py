@@ -65,6 +65,27 @@ def test_client_default_urls():
     assert client.config.reconnect_delay == 1.0
 
 
+def test_get_base_endpoint():
+    """Test that get_base_endpoint returns the correct base URL."""
+    config = ClientConfig(host="test.example.com", username="u", password="p")
+    client = CresNextWSClient(config)
+    
+    assert client.get_base_endpoint() == "https://test.example.com"
+
+
+def test_get_base_endpoint_with_different_host():
+    """Test get_base_endpoint with different host configurations."""
+    # Test with IP address
+    config1 = ClientConfig(host="192.168.1.100", username="u", password="p")
+    client1 = CresNextWSClient(config1)
+    assert client1.get_base_endpoint() == "https://192.168.1.100"
+    
+    # Test with domain name
+    config2 = ClientConfig(host="device.local", username="u", password="p")
+    client2 = CresNextWSClient(config2)
+    assert client2.get_base_endpoint() == "https://device.local"
+
+
 @pytest.mark.asyncio
 async def test_http_get_not_connected():
     """Test that http_get raises RuntimeError when not connected."""

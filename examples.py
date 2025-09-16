@@ -229,6 +229,14 @@ async def config_example():
     print(f"Reconnect delay: {config.reconnect_delay}s")
     print(f"Auth endpoint: {config.auth_path}")
     print(f"WebSocket endpoint: {config.websocket_path}")
+    
+    # Create client and demonstrate utility methods
+    client = CresNextWSClient(config)
+    
+    # Get the base endpoint URL
+    base_url = client.get_base_endpoint()
+    print(f"Base HTTPS endpoint: {base_url}")
+    print("This base URL is used for all HTTP requests and WebSocket origins.")
 
 
 async def data_event_manager_example():

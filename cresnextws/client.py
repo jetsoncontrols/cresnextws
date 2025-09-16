@@ -164,11 +164,20 @@ class CresNextWSClient:
                 except Exception as e:
                     logger.error(f"Error in connection status handler: {e}")
 
-    def _get_base_endpoint(self) -> str:
-        """Return the base URL for the configured host.
+    def get_base_endpoint(self) -> str:
+        """
+        Return the base URL for the configured host.
+
+        This method provides access to the base HTTPS endpoint URL that is used
+        for all HTTP requests and as the origin for WebSocket connections.
 
         Returns:
             str: Base URL in format 'https://{host}'
+            
+        Example:
+            >>> client = CresNextWSClient(ClientConfig(host="device.local", ...))
+            >>> client.get_base_endpoint()
+            'https://device.local'
         """
         return f"https://{self.config.host}"  # :{self.config.port}
 
@@ -178,7 +187,7 @@ class CresNextWSClient:
         Returns:
             str: Authentication URL in format 'https://{host}{auth_path}'
         """
-        return f"{self._get_base_endpoint()}{self.config.auth_path}"
+        return f"{self.get_base_endpoint()}{self.config.auth_path}"
 
     def _get_logout_endpoint(self) -> str:
         """Return the full REST logout endpoint for the configured host.
@@ -186,7 +195,7 @@ class CresNextWSClient:
         Returns:
             str: Logout URL in format 'https://{host}{logout_path}'
         """
-        return f"{self._get_base_endpoint()}{self.config.logout_path}"
+        return f"{self.get_base_endpoint()}{self.config.logout_path}"
 
     def _get_ws_url(self) -> str:
         """Return the full WebSocket URL for the configured host.
@@ -239,7 +248,7 @@ class CresNextWSClient:
             async with self._http_session.post(
                 self._get_auth_endpoint(),
                 headers={
-                    "Origin": self._get_base_endpoint(),
+                    "Origin": self.get_base_endpoint(),
                     "Referer": f"{self._get_auth_endpoint()}",
                 },
                 data={
@@ -305,18 +314,18 @@ class CresNextWSClient:
             # Add XSRF token to cookie jar if present (server expects it as a cookie on WS)
             if auth_token:
                 self._http_session.cookie_jar.update_cookies(
-                    {"CREST-XSRF-TOKEN": auth_token}, URL(self._get_base_endpoint())
+                    {"CREST-XSRF-TOKEN": auth_token}, URL(self.get_base_endpoint())
                 )
 
             # Build Cookie header with all cookies for this host
             cookies = self._http_session.cookie_jar.filter_cookies(
-                URL(self._get_base_endpoint())
+                URL(self.get_base_endpoint())
             )
             cookie_parts = (
                 [f"{name}={m.value}" for name, m in cookies.items()] if cookies else []
             )
             headers = {
-                "Origin": self._get_base_endpoint(),
+                "Origin": self.get_base_endpoint(),
                 # "Referer": f"{self._get_auth_endpoint()}",
                 "Accept-Encoding": "gzip, deflate, br",
                 "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
@@ -575,7 +584,7 @@ class CresNextWSClient:
 
         try:
             # Construct full URL
-            url = f"{self._get_base_endpoint()}{path}"
+            url = f"{self.get_base_endpoint()}{path}"
             logger.error(f"Making HTTP GET request to: {url}")
 
             async with self._http_session.get(url) as response:
@@ -663,12 +672,12 @@ class CresNextWSClient:
 
         try:
             # Construct full URL
-            url = f"{self._get_base_endpoint()}{path}"
+            url = f"{self.get_base_endpoint()}{path}"
             logger.debug(f"Making HTTP post request to: {url}")
 
             # Prepare headers - start with Content-Type
             cookies = self._http_session.cookie_jar.filter_cookies(
-                URL(self._get_base_endpoint())
+                URL(self.get_base_endpoint())
             )
             headers = {"X-CREST-XSRF-TOKEN": cookies["CREST-XSRF-TOKEN"].value}
 

@@ -133,6 +133,37 @@ async def main():
 asyncio.run(main())
 ```
 
+### Configuration and Utilities
+
+Access configuration details and utility methods:
+
+```python
+import asyncio
+from cresnextws import CresNextWSClient, ClientConfig
+
+async def main():
+    config = ClientConfig(
+        host="your-cresnext-host.local",
+        username="your_username",
+        password="your_password"
+    )
+    
+    client = CresNextWSClient(config)
+    
+    # Get the base HTTPS endpoint URL
+    base_url = client.get_base_endpoint()
+    print(f"Base endpoint: {base_url}")  # Output: https://your-cresnext-host.local
+    
+    # This is useful for constructing custom URLs or understanding the connection target
+    # The base endpoint is used internally for all HTTP requests and WebSocket origins
+    
+    await client.connect()
+    # ... your application logic ...
+    await client.disconnect()
+
+asyncio.run(main())
+```
+
 ### DataEventManager - Real-time Monitoring
 
 The `DataEventManager` provides automatic monitoring of WebSocket messages with path-based subscriptions:
