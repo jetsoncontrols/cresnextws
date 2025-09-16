@@ -22,7 +22,7 @@ Note: Examples use placeholder hostnames. Update the host/credentials for your s
 
 import asyncio
 import logging
-from cresnextws import CresNextWSClient, ClientConfig, DataEventManager
+from cresnextws import CresNextWSClient, ClientConfig, DataEventManager, ConnectionStatus
 
 
 # Configure logging to see what's happening
@@ -97,6 +97,82 @@ async def basic_example():
         print("✓ Disconnected")
     else:
         print("✗ Failed to connect")
+
+
+async def connection_status_events_example():
+    """
+    Example demonstrating connection status event subscription.
+    
+    This example shows how external applications can monitor the CresNext client's
+    connection status and respond to connect/disconnect events.
+    """
+    print("\n=== Connection Status Events Example ===")
+    
+    def on_connection_status_change(status: ConnectionStatus):
+        """
+        Callback function that gets called whenever the connection status changes.
+        
+        Args:
+            status: The new ConnectionStatus
+        """
+        if status == ConnectionStatus.CONNECTED:
+            print("🟢 Client connected successfully!")
+        elif status == ConnectionStatus.DISCONNECTED:
+            print("🔴 Client disconnected")
+        elif status == ConnectionStatus.CONNECTING:
+            print("🟡 Client connecting...")
+        elif status == ConnectionStatus.RECONNECTING:
+            print("🟠 Client reconnecting...")
+
+    # Create client configuration
+    config = ClientConfig(
+        host="example.cresnext.local",  # Replace with your device
+        username="admin",
+        password="password",
+        auto_reconnect=True,
+        reconnect_delay=2.0
+    )
+    
+    # Create client
+    client = CresNextWSClient(config)
+    
+    # Subscribe to connection status events
+    print("Adding connection status event handler...")
+    client.add_connection_status_handler(on_connection_status_change)
+    
+    # Show current status
+    print(f"Initial status: {client.get_connection_status().value}")
+    
+    try:
+        # Connect to the device
+        print("Starting connection...")
+        success = await client.connect()
+        
+        if success:
+            print("Connection established, waiting for events...")
+            
+            # Wait for some time to observe events
+            await asyncio.sleep(3)
+            
+            # Manually disconnect to demonstrate disconnect event
+            print("Manually disconnecting...")
+            await client.disconnect()
+            
+        else:
+            print("Connection failed (expected with example hostname)")
+            
+    except KeyboardInterrupt:
+        print("Interrupted by user")
+    except Exception as e:
+        print(f"Connection error (expected): {e}")
+    finally:
+        # Clean up
+        if client.connected:
+            await client.disconnect()
+        
+        # Remove the handler (optional, but good practice)
+        print("Removing connection status event handler...")
+        client.remove_connection_status_handler(on_connection_status_change)
 
 
 async def context_manager_example():
@@ -584,6 +660,7 @@ async def main():
     print("=" * 50)
 
     await basic_example()
+    await connection_status_events_example()
     await config_example()
     await context_manager_example()
     await data_event_manager_example()

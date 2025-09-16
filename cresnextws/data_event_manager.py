@@ -197,16 +197,22 @@ class DataEventManager:
             return [(parent_path, data)] if parent_path else []
         
         for key, value in data.items():
-            current_path = f"{parent_path}/{key}" if parent_path else f"/{key}"
-            
-            if isinstance(value, dict):
-                # Add the current path with the dict value
+            # Special case: if key starts with "/" it's already a full path
+            if key.startswith("/"):
+                current_path = key
+                # For full paths, just add the path with its value (don't recurse)
                 paths.append((current_path, value))
-                # Recursively extract nested paths
-                paths.extend(self._extract_paths_from_nested_data(value, current_path))
             else:
-                # Leaf node - add the path with its value
-                paths.append((current_path, value))
+                current_path = f"{parent_path}/{key}" if parent_path else f"/{key}"
+                
+                if isinstance(value, dict):
+                    # Add the current path with the dict value
+                    paths.append((current_path, value))
+                    # Recursively extract nested paths
+                    paths.extend(self._extract_paths_from_nested_data(value, current_path))
+                else:
+                    # Leaf node - add the path with its value
+                    paths.append((current_path, value))
         
         return paths
 
@@ -220,9 +226,17 @@ class DataEventManager:
         try:
             logger.debug(f"Processing message: {message}")
             
-            # Extract all paths from nested structure
-            # For messages like {'Device': {'Ethernet': {'HostName': 'DM-NAX-4ZSP'}}}
-            paths_and_data = self._extract_paths_from_nested_data(message)
+            # Handle messages with explicit path/data keys (both lowercase and uppercase)
+            explicit_path = message.get("path") or message.get("Path")
+            explicit_data = message.get("data") or message.get("Data")
+            
+            if explicit_path is not None:
+                # Direct path/data message format
+                paths_and_data = [(explicit_path, explicit_data)]
+            else:
+                # Extract all paths from nested structure
+                # For messages like {'Device': {'Ethernet': {'HostName': 'DM-NAX-4ZSP'}}}
+                paths_and_data = self._extract_paths_from_nested_data(message)
             
             if not paths_and_data:
                 logger.debug(f"No paths could be extracted from message: {message}")

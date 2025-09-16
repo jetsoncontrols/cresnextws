@@ -87,6 +87,52 @@ async def main():
 asyncio.run(main())
 ```
 
+### Connection Status Events
+
+Monitor connection state changes with event callbacks:
+
+```python
+import asyncio
+from cresnextws import CresNextWSClient, ClientConfig, ConnectionStatus
+
+def on_status_change(status: ConnectionStatus):
+    if status == ConnectionStatus.CONNECTED:
+        print("🟢 Connected to device!")
+    elif status == ConnectionStatus.DISCONNECTED:
+        print("🔴 Disconnected from device")
+    elif status == ConnectionStatus.CONNECTING:
+        print("🟡 Connecting...")
+    elif status == ConnectionStatus.RECONNECTING:
+        print("🟠 Reconnecting...")
+
+async def main():
+    config = ClientConfig(
+        host="your-cresnext-host.local",
+        username="your_username", 
+        password="your_password",
+        auto_reconnect=True
+    )
+    
+    client = CresNextWSClient(config)
+    
+    # Subscribe to connection status events
+    client.add_connection_status_handler(on_status_change)
+    
+    # Get current status
+    print(f"Current status: {client.get_connection_status()}")
+    
+    # Connect (will trigger status events)
+    await client.connect()
+    
+    # Your application logic here...
+    
+    # Cleanup
+    client.remove_connection_status_handler(on_status_change)
+    await client.disconnect()
+
+asyncio.run(main())
+```
+
 ### DataEventManager - Real-time Monitoring
 
 The `DataEventManager` provides automatic monitoring of WebSocket messages with path-based subscriptions:
@@ -319,6 +365,7 @@ mypy cresnextws/
 - **Async/await support** for non-blocking operations
 - **HTTP and WebSocket APIs** for comprehensive device interaction
 - **DataEventManager** for real-time monitoring with path-based subscriptions
+- **Connection Status Events** for monitoring connect/disconnect states
 - **Context manager support** for automatic connection management
 - **Type hints** for better development experience
 - **Comprehensive logging** support

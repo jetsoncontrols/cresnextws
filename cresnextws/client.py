@@ -8,7 +8,8 @@ with Crestron CresNext WebSocket API.
 import asyncio
 import json
 import logging
-from typing import Optional, Dict, Any, Type
+from typing import Optional, Dict, Any, Type, Callable, List
+from enum import Enum
 
 import aiohttp
 import websockets
@@ -19,6 +20,14 @@ from yarl import URL
 
 
 logger = logging.getLogger(__name__)
+
+
+class ConnectionStatus(Enum):
+    """Enum representing connection status states."""
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    RECONNECTING = "reconnecting"
 
 
 @dataclass
@@ -84,10 +93,71 @@ class CresNextWSClient:
         self._recv_task = None
         self._inbound_queue = asyncio.Queue()
 
+        # Connection status event handlers
+        self._connection_status_handlers: List[Callable[[ConnectionStatus], None]] = []
+        self._current_status = ConnectionStatus.DISCONNECTED
+
         logger.debug(
             f"CresNextWSClient initialized for {self.config.host} "
             f"(Auto-reconnect: {self.config.auto_reconnect})"
         )
+
+    def add_connection_status_handler(self, handler: Callable[[ConnectionStatus], None]) -> None:
+        """
+        Add a callback handler for connection status changes.
+        
+        Args:
+            handler: A callable that takes a ConnectionStatus enum value.
+                    This will be called whenever the connection status changes.
+        
+        Example:
+            def on_status_change(status):
+                if status == ConnectionStatus.CONNECTED:
+                    print("Client connected!")
+                elif status == ConnectionStatus.DISCONNECTED:
+                    print("Client disconnected!")
+            
+            client.add_connection_status_handler(on_status_change)
+        """
+        if handler not in self._connection_status_handlers:
+            self._connection_status_handlers.append(handler)
+
+    def remove_connection_status_handler(self, handler: Callable[[ConnectionStatus], None]) -> None:
+        """
+        Remove a connection status change handler.
+        
+        Args:
+            handler: The handler function to remove
+        """
+        if handler in self._connection_status_handlers:
+            self._connection_status_handlers.remove(handler)
+
+    def get_connection_status(self) -> ConnectionStatus:
+        """
+        Get the current connection status.
+        
+        Returns:
+            ConnectionStatus: The current status of the connection
+        """
+        return self._current_status
+
+    def _notify_status_change(self, new_status: ConnectionStatus) -> None:
+        """
+        Internal method to notify all handlers of a status change.
+        
+        Args:
+            new_status: The new connection status
+        """
+        if new_status != self._current_status:
+            self._current_status = new_status
+            logger.debug(f"Connection status changed to: {new_status.value}")
+            
+            # Notify all registered handlers
+            for handler in self._connection_status_handlers:
+                try:
+                    handler(new_status)
+                except Exception as e:
+                    logger.error(f"Error in connection status handler: {e}")
 
     def _get_base_endpoint(self) -> str:
         """Return the base URL for the configured host.
@@ -198,6 +268,9 @@ class CresNextWSClient:
             logger.debug("Already connected")
             return True
 
+        # Notify that we're starting the connection process
+        self._notify_status_change(ConnectionStatus.CONNECTING)
+
         logger.info(f"Connecting to CresNext WS API at {self.config.host}")
 
         try:
@@ -208,6 +281,7 @@ class CresNextWSClient:
             if auth_token is None or self._http_session is None:
                 logger.error("Authentication failed; aborting connection")
                 self._connected = False
+                self._notify_status_change(ConnectionStatus.DISCONNECTED)
                 return False
 
             ssl_context = ssl.create_default_context()
@@ -261,11 +335,13 @@ class CresNextWSClient:
             self._recv_task = asyncio.create_task(self._recv_loop())
 
             logger.info("WebSocket connection established")
+            self._notify_status_change(ConnectionStatus.CONNECTED)
             return True
 
         except Exception as e:
             logger.error(f"Connection failed: {e}")
             self._connected = False
+            self._notify_status_change(ConnectionStatus.DISCONNECTED)
             return False
 
     async def _handle_disconnection(self) -> None:
@@ -278,12 +354,14 @@ class CresNextWSClient:
 
         logger.info("Connection lost")
         self._connected = False
+        self._notify_status_change(ConnectionStatus.DISCONNECTED)
 
         # Clean up current connection
         await self._cleanup_connection()
 
         if self.config.auto_reconnect:
             logger.info("Attempting to reconnect...")
+            self._notify_status_change(ConnectionStatus.RECONNECTING)
             # Start reconnection task
             if not self._reconnect_task or self._reconnect_task.done():
                 self._reconnect_task = asyncio.create_task(self._reconnect_loop())
@@ -450,6 +528,7 @@ class CresNextWSClient:
 
         self._connected = False
         self._auth_token = None
+        self._notify_status_change(ConnectionStatus.DISCONNECTED)
         logger.info("Disconnected from CresNext")
 
     @property

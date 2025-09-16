@@ -21,12 +21,13 @@ except (ImportError, PackageNotFoundError):
     __email__ = ""
     __description__ = "Crestron CresNext WebSocket API Client"
 
-from .client import CresNextWSClient, ClientConfig
+from .client import CresNextWSClient, ClientConfig, ConnectionStatus
 from .data_event_manager import DataEventManager, Subscription
 
 __all__ = [
     "CresNextWSClient",
-    "ClientConfig",
+    "ClientConfig", 
+    "ConnectionStatus",
     "DataEventManager",
     "Subscription",
     "__version__",
