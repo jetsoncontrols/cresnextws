@@ -585,7 +585,7 @@ class CresNextWSClient:
         try:
             # Construct full URL
             url = f"{self.get_base_endpoint()}{path}"
-            logger.error(f"Making HTTP GET request to: {url}")
+            logger.debug(f"Making HTTP GET request to: {url}")
 
             async with self._http_session.get(url) as response:
                 if response.status == 200:
