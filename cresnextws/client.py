@@ -14,6 +14,7 @@ from enum import Enum
 import aiohttp
 import websockets
 from websockets.extensions.permessage_deflate import ClientPerMessageDeflateFactory
+from websockets.exceptions import ConnectionClosed, WebSocketException
 from dataclasses import dataclass
 import ssl
 from yarl import URL
@@ -481,6 +482,10 @@ class CresNextWSClient:
                     logger.error(f"Error handling received message: {e}")
         except asyncio.CancelledError:
             logger.debug("Receive loop cancelled")
+        except (ConnectionClosed, WebSocketException) as e:
+            logger.error(f"WebSocket connection error in receive loop: {e}")
+            if self.config.auto_reconnect:
+                await self._handle_disconnection()
         except Exception as e:
             logger.error(f"Receive loop error: {e}")
             if self.config.auto_reconnect:
@@ -739,6 +744,13 @@ class CresNextWSClient:
             await self._websocket.send(path)
             logger.debug(f"WebSocket GET request sent successfully for: {path}")
 
+        except (ConnectionClosed, WebSocketException) as e:
+            logger.error(f"Failed to send WebSocket GET request for {path}: {e}")
+            # Handle connection loss and trigger reconnection if enabled
+            if self.config.auto_reconnect:
+                # Don't await here to avoid blocking the caller
+                asyncio.create_task(self._handle_disconnection())
+            raise
         except Exception as e:
             logger.error(f"Failed to send WebSocket GET request for {path}: {e}")
             raise
@@ -770,6 +782,13 @@ class CresNextWSClient:
             await self._websocket.send(json_payload)
             logger.debug("WebSocket POST request sent successfully")
 
+        except (ConnectionClosed, WebSocketException) as e:
+            logger.error(f"Failed to send WebSocket POST request: {e}")
+            # Handle connection loss and trigger reconnection if enabled
+            if self.config.auto_reconnect:
+                # Don't await here to avoid blocking the caller
+                asyncio.create_task(self._handle_disconnection())
+            raise
         except Exception as e:
             logger.error(f"Failed to send WebSocket POST request: {e}")
             raise

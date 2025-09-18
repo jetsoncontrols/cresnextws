@@ -10,6 +10,7 @@ Includes examples for:
 - Configuration management
 - Context manager usage
 - DataEventManager with various subscription patterns
+- DataEventManager full_message option (new feature)
 - DataEventManager as context manager (auto-cleanup)
 - Device monitoring with specialized callbacks
 - WebSocket message handling
@@ -346,6 +347,121 @@ async def data_event_manager_example():
         print("✓ Cleaned up and disconnected")
 
 
+async def full_message_example():
+    """Example demonstrating the full_message option in DataEventManager subscriptions."""
+    print("\n=== Full Message Example ===")
+    
+    config = ClientConfig(
+        host="example.cresnext.local",
+        username="admin",  
+        password="password",
+        ignore_self_signed=True
+    )
+    
+    client = CresNextWSClient(config)
+    data_manager = DataEventManager(client)
+    
+    # Storage for received events
+    received_events = []
+    
+    def value_only_callback(path: str, data):
+        """Callback that receives only the changed value (default behavior)."""
+        print(f"Value-only callback - Path: {path}")
+        print(f"  Data type: {type(data)}")
+        print(f"  Data: {data}")
+        received_events.append({"type": "value_only", "path": path, "data": data})
+    
+    def full_message_callback(path: str, data):
+        """Callback that receives the full JSON message."""
+        print(f"Full-message callback - Path: {path}")
+        print(f"  Data type: {type(data)}")
+        print(f"  Data keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+        received_events.append({"type": "full_message", "path": path, "data": data})
+    
+    try:
+        # Connect to the system
+        print("Connecting...")
+        if not await client.connect():
+            print("Failed to connect!")
+            return
+        
+        print("✓ Connected successfully!")
+        
+        # Set up subscriptions with different full_message settings
+        print("\nSetting up subscriptions...")
+        
+        # Traditional subscription (full_message=False by default)
+        value_sub_id = data_manager.subscribe(
+            path_pattern="/Device/Ethernet/HostName",
+            callback=value_only_callback,
+            match_children=False,
+            full_message=False  # Explicit for clarity, this is the default
+        )
+        
+        # New full-message subscription
+        full_sub_id = data_manager.subscribe(
+            path_pattern="/Device/Ethernet/HostName", 
+            callback=full_message_callback,
+            match_children=False,
+            full_message=True  # This is the new functionality
+        )
+        
+        print(f"Created subscriptions: value-only ({value_sub_id}) and full-message ({full_sub_id})")
+        
+        # Display subscription info
+        subscriptions = data_manager.get_subscriptions()
+        print("\nSubscription details:")
+        for sub in subscriptions:
+            print(f"  ID: {sub['subscription_id']}")
+            print(f"  Pattern: {sub['path_pattern']}")  
+            print(f"  Full message: {sub['full_message']}")
+            print()
+        
+        # Start monitoring WebSocket messages
+        print("Starting message monitoring...")
+        await data_manager.start_monitoring()
+        
+        # Request data to trigger both callbacks
+        print("\nRequesting hostname data...")
+        await client.ws_get("/Device/Ethernet/HostName")
+        
+        # Wait for events to be processed
+        print("Waiting for events...")
+        await asyncio.sleep(3)
+        
+        # Show the difference between the callbacks
+        print(f"\nReceived {len(received_events)} events total")
+        for event in received_events:
+            print(f"\nEvent type: {event['type']}")
+            print(f"  Path: {event['path']}")
+            if event['type'] == 'value_only':
+                print(f"  Received only the value: {event['data']}")
+            else:  # full_message
+                print(f"  Received full message with keys: {list(event['data'].keys()) if isinstance(event['data'], dict) else 'N/A'}")
+                print(f"  Full message: {event['data']}")
+        
+        # Demonstrate mixed usage - one path with both subscription types
+        print("\n--- Mixed Subscription Demo ---")
+        print("Both callbacks will be triggered for the same data change:")
+        print("- Value-only callback will receive just the changed value")
+        print("- Full-message callback will receive the entire WebSocket message")
+        
+        received_events.clear()
+        await client.ws_get("/Device/Ethernet/HostName") 
+        await asyncio.sleep(2)
+        
+        print(f"\nAfter second request, received {len(received_events)} events")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        # Clean up
+        print("\nCleaning up...")
+        await data_manager.stop_monitoring()
+        await client.disconnect()
+        print("✓ Cleaned up and disconnected")
+
+
 async def websocket_message_handling_example():
     """Example showing manual WebSocket message handling."""
     print("\n=== WebSocket Message Handling Example ===")
@@ -672,6 +788,7 @@ async def main():
     await config_example()
     await context_manager_example()
     await data_event_manager_example()
+    await full_message_example()
     await data_event_manager_context_example()
     await device_monitoring_example()
     await websocket_message_handling_example()

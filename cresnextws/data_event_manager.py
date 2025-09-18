@@ -35,10 +35,12 @@ class Subscription:
         path_pattern (str): The path pattern to match (supports wildcards)
         callback (Callable): The callback function to invoke when data matches
         match_children (bool): Whether to match child paths (default: True)
+        full_message (bool): Whether to pass the full JSON message to callback (default: False)
     """
     path_pattern: str
     callback: Callable[[str, Any], None]
     match_children: bool = True
+    full_message: bool = False
     subscription_id: str = field(default_factory=_generate_subscription_id)
 
 
@@ -69,7 +71,8 @@ class DataEventManager:
         self, 
         path_pattern: str, 
         callback: Callable[[str, Any], None],
-        match_children: bool = True
+        match_children: bool = True,
+        full_message: bool = False
     ) -> str:
         """
         Subscribe to a path pattern with a callback function.
@@ -84,6 +87,8 @@ class DataEventManager:
                                                    Receives (path, data) as arguments.
             match_children (bool): If True, also matches child paths beneath the pattern.
                                   If False, only matches the exact pattern.
+            full_message (bool): If True, passes the full JSON message as the data parameter.
+                                If False, passes only the changed value (default behavior).
         
         Returns:
             str: Subscription ID that can be used to unsubscribe
@@ -91,7 +96,8 @@ class DataEventManager:
         subscription = Subscription(
             path_pattern=path_pattern,
             callback=callback,
-            match_children=match_children
+            match_children=match_children,
+            full_message=full_message
         )
         
         subscription_id = subscription.subscription_id
@@ -135,7 +141,8 @@ class DataEventManager:
             {
                 "subscription_id": sub_id,
                 "path_pattern": sub.path_pattern,
-                "match_children": sub.match_children
+                "match_children": sub.match_children,
+                "full_message": sub.full_message
             }
             for sub_id, sub in self._subscriptions.items()
         ]
@@ -261,7 +268,9 @@ class DataEventManager:
                 for sub_id, subscription in matched_subscriptions:
                     try:
                         logger.debug(f"Triggering callback for subscription {sub_id} (pattern: {subscription.path_pattern}, path: {path})")
-                        subscription.callback(path, data)
+                        # Pass either the full message or just the specific data based on subscription setting
+                        callback_data = message if subscription.full_message else data
+                        subscription.callback(path, callback_data)
                     except Exception as e:
                         logger.error(f"Error in callback for subscription {sub_id}: {e}")
                 

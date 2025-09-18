@@ -193,6 +193,96 @@ class TestDataEventManager:
         callback1.assert_called_once_with("/Device/Config", {"value": "test"})
         callback2.assert_called_once_with("/Device/Config", {"value": "test"})
 
+    def test_subscribe_with_full_message(self, data_manager):
+        """Test subscribing with full_message=True."""
+        callback = Mock()
+        
+        data_manager.subscribe("/Device/Config", callback, full_message=True)
+        
+        subscriptions = data_manager.get_subscriptions()
+        assert subscriptions[0]["full_message"] is True
+
+    def test_subscribe_default_full_message(self, data_manager):
+        """Test subscribing with default full_message=False."""
+        callback = Mock()
+        
+        data_manager.subscribe("/Device/Config", callback)
+        
+        subscriptions = data_manager.get_subscriptions()
+        assert subscriptions[0]["full_message"] is False
+
+    def test_process_message_with_full_message_true(self, data_manager):
+        """Test processing a message with full_message=True passes entire message."""
+        callback = Mock()
+        data_manager.subscribe("/Device/Config", callback, full_message=True)
+        
+        message = {
+            "path": "/Device/Config",
+            "data": {"value": "test"},
+            "timestamp": "2023-01-01T00:00:00Z",
+            "other_field": "extra_data"
+        }
+        
+        data_manager._process_message(message)
+        
+        # With full_message=True, callback should receive the entire message
+        callback.assert_called_once_with("/Device/Config", message)
+
+    def test_process_message_with_full_message_false(self, data_manager):
+        """Test processing a message with full_message=False passes only data."""
+        callback = Mock()
+        data_manager.subscribe("/Device/Config", callback, full_message=False)
+        
+        message = {
+            "path": "/Device/Config",
+            "data": {"value": "test"},
+            "timestamp": "2023-01-01T00:00:00Z",
+            "other_field": "extra_data"
+        }
+        
+        data_manager._process_message(message)
+        
+        # With full_message=False, callback should receive only the data portion
+        callback.assert_called_once_with("/Device/Config", {"value": "test"})
+
+    def test_process_message_nested_structure_with_full_message(self, data_manager):
+        """Test processing nested message structure with full_message=True."""
+        callback = Mock()
+        data_manager.subscribe("/Device/Config", callback, full_message=True, match_children=False)
+        
+        message = {
+            "Device": {
+                "Config": {"value": "test"}
+            },
+            "timestamp": "2023-01-01T00:00:00Z"
+        }
+        
+        data_manager._process_message(message)
+        
+        # With full_message=True and match_children=False, callback should be called once with the entire message
+        callback.assert_called_once_with("/Device/Config", message)
+
+    def test_process_message_multiple_subscriptions_mixed_full_message(self, data_manager):
+        """Test processing message with mixed full_message settings."""
+        callback_full = Mock()
+        callback_data_only = Mock()
+        
+        data_manager.subscribe("/Device/Config", callback_full, full_message=True)
+        data_manager.subscribe("/Device/Config", callback_data_only, full_message=False)
+        
+        message = {
+            "path": "/Device/Config",
+            "data": {"value": "test"},
+            "timestamp": "2023-01-01T00:00:00Z"
+        }
+        
+        data_manager._process_message(message)
+        
+        # First callback should get full message
+        callback_full.assert_called_once_with("/Device/Config", message)
+        # Second callback should get only data
+        callback_data_only.assert_called_once_with("/Device/Config", {"value": "test"})
+
     @pytest.mark.asyncio
     async def test_start_monitoring_not_connected(self, data_manager):
         """Test starting monitoring when client is not connected."""
@@ -227,6 +317,7 @@ class TestSubscription:
         assert sub.path_pattern == "/Device/Config"
         assert sub.callback == callback
         assert sub.match_children is True
+        assert sub.full_message is False
         assert isinstance(sub.subscription_id, str)
 
     def test_subscription_no_children(self):
@@ -237,3 +328,14 @@ class TestSubscription:
         sub = Subscription("/Device/Config", callback, match_children=False)
         
         assert sub.match_children is False
+        assert sub.full_message is False
+
+    def test_subscription_full_message(self):
+        """Test creating a subscription with full_message=True."""
+        from cresnextws.data_event_manager import Subscription
+        
+        callback = Mock()
+        sub = Subscription("/Device/Config", callback, full_message=True)
+        
+        assert sub.full_message is True
+        assert sub.match_children is True

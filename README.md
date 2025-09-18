@@ -228,6 +228,24 @@ data_manager.subscribe("/Device/*", callback)                         # Wildcard
 data_manager.subscribe("/Device/Config", callback, match_children=True)  # Include children
 ```
 
+#### Full Message Access
+
+By default, callbacks receive only the changed value. Use `full_message=True` to access the complete WebSocket message including metadata:
+
+```python
+def value_only_callback(path: str, data):
+    print(f"Value: {data}")  # Only the changed data
+
+def full_message_callback(path: str, message):
+    print(f"Full message: {message}")  # Complete JSON with timestamps, etc.
+
+# Traditional behavior (default)
+data_manager.subscribe("/Device/Config", value_only_callback, full_message=False)
+
+# New: Access full message including metadata
+data_manager.subscribe("/Device/Config", full_message_callback, full_message=True)
+```
+
 #### Context Manager Usage
 
 ```python
@@ -271,7 +289,9 @@ asyncio.run(monitor_with_context())
 ### DataEventManager Methods
 
 #### Subscription Management
-- `subscribe(path_pattern, callback, match_children=True)` - Add subscription
+- `subscribe(path_pattern, callback, match_children=True, full_message=False)` - Add subscription
+  - `full_message=True` - Pass complete JSON message to callback (includes metadata)
+  - `full_message=False` - Pass only the changed value to callback (default behavior)
 - `unsubscribe(subscription_id)` - Remove subscription
 - `clear_subscriptions()` - Remove all subscriptions
 - `get_subscriptions()` - List current subscriptions
@@ -396,6 +416,7 @@ mypy cresnextws/
 - **Async/await support** for non-blocking operations
 - **HTTP and WebSocket APIs** for comprehensive device interaction
 - **DataEventManager** for real-time monitoring with path-based subscriptions
+- **Full message access** option for receiving complete WebSocket messages with metadata
 - **Connection Status Events** for monitoring connect/disconnect states
 - **Context manager support** for automatic connection management
 - **Type hints** for better development experience
