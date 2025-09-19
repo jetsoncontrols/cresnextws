@@ -85,6 +85,9 @@ jobs:
         if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.publish_to_testpypi }}" == "true" ]]; then
           echo "repository=testpypi" >> $GITHUB_OUTPUT
           echo "repository_url=https://test.pypi.org/simple/" >> $GITHUB_OUTPUT
+        elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.publish_to_testpypi }}" == "false" ]]; then
+          echo "repository=pypi" >> $GITHUB_OUTPUT
+          echo "repository_url=https://pypi.org/simple/" >> $GITHUB_OUTPUT
         elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
           echo "repository=pypi" >> $GITHUB_OUTPUT
           echo "repository_url=https://pypi.org/simple/" >> $GITHUB_OUTPUT
