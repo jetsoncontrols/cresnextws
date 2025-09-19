@@ -7,7 +7,7 @@ client and triggers callbacks based on path-based subscriptions.
 
 import asyncio
 import logging
-from typing import Dict, Any, List, Callable, Optional
+from typing import Dict, Any, List, Callable, Optional, Tuple
 from dataclasses import dataclass, field
 import fnmatch
 from .client import CresNextWSClient
@@ -194,7 +194,7 @@ class DataEventManager:
 
     def _extract_paths_from_nested_data(
         self, data: Dict[str, Any], parent_path: str = ""
-    ) -> List[tuple[str, Any]]:
+    ) -> List[Tuple[str, Any]]:
         """
         Recursively extract all paths and their values from nested data.
 
@@ -203,7 +203,7 @@ class DataEventManager:
             parent_path (str): The parent path (for recursion)
 
         Returns:
-            List[tuple[str, Any]]: List of (path, value) tuples
+            List[Tuple[str, Any]]: List of (path, value) tuples
         """
         paths = []
 
