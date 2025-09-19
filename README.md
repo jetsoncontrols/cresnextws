@@ -479,3 +479,62 @@ mypy cresnextws/
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Publishing
+
+This project is automatically published to PyPI using GitHub Actions. The publishing workflow is triggered by:
+
+### For Development Releases (Test PyPI)
+- **Pushes to main branch**: Automatically publishes to Test PyPI for testing
+- **Manual workflow dispatch**: Can be triggered manually with option to publish to Test PyPI
+
+### For Production Releases (PyPI)
+- **Version tags**: Create and push a version tag (e.g., `v1.0.0`, `v0.2.1`) to trigger a production release to PyPI
+
+### Setting up PyPI Credentials
+
+To enable automatic publishing, you need to configure the following secrets in your GitHub repository:
+
+1. **For Test PyPI publishing** (pushes to main branch):
+   - Go to [Test PyPI](https://test.pypi.org/manage/account/), create an API token
+   - Add the token as `TEST_PYPI_API_TOKEN` in GitHub repository secrets
+
+2. **For PyPI publishing** (version tags):
+   - Go to [PyPI](https://pypi.org/manage/account/), create an API token
+   - Add the token as `PYPI_API_TOKEN` in GitHub repository secrets
+
+### Creating a Release
+
+To create a new release:
+
+1. Update the version in `pyproject.toml`
+2. Commit your changes
+3. Create and push a tag:
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+
+The GitHub Action will automatically:
+- Run tests across multiple Python versions
+- Build the package
+- Publish to PyPI
+- Create a GitHub release with release notes
+
+### Manual Testing
+
+To test the package build locally before releasing:
+
+```bash
+# Install build tools
+pip install build twine
+
+# Build the package
+python -m build --no-isolation
+
+# Check the package
+python -m twine check dist/*
+
+# Test upload to Test PyPI (optional)
+python -m twine upload --repository testpypi dist/*
+```

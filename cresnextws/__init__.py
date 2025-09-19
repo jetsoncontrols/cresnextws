@@ -26,7 +26,7 @@ from .data_event_manager import DataEventManager, Subscription
 
 __all__ = [
     "CresNextWSClient",
-    "ClientConfig", 
+    "ClientConfig",
     "ConnectionStatus",
     "DataEventManager",
     "Subscription",
