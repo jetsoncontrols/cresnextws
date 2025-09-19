@@ -59,6 +59,48 @@ async def main():
 asyncio.run(main())
 ```
 
+### Health Check Configuration
+
+The library includes a health check mechanism to detect stale connections (particularly after system sleep/wake cycles) and automatically trigger reconnection:
+
+```python
+import asyncio
+from cresnextws import CresNextWSClient, ClientConfig
+
+async def main():
+    config = ClientConfig(
+        host="your-cresnext-host.local",
+        username="your_username",
+        password="your_password",
+        auto_reconnect=True,            # Enable automatic reconnection (required for health check)
+        health_check_interval=30.0,     # Check connection health every 30 seconds (default)
+        health_check_timeout=5.0        # Health check ping timeout in seconds (default)
+    )
+    
+    client = CresNextWSClient(config)
+    await client.connect()
+    
+    # Health check runs automatically in the background
+    # If a ping fails or times out, it will trigger reconnection
+    
+    # Your application logic here...
+    await asyncio.sleep(300)  # Run for 5 minutes
+    
+    await client.disconnect()
+
+asyncio.run(main())
+```
+
+**Health Check Features:**
+- **Automatic Detection**: Detects stale WebSocket connections after system sleep/wake cycles
+- **Configurable Intervals**: Customize how often to check connection health
+- **Timeout Handling**: Configurable timeout for ping responses
+- **Seamless Integration**: Works alongside existing reconnection system
+- **Zero Configuration**: Enabled by default with sensible defaults when `auto_reconnect=True`
+
+**Note**: Health check only runs when `auto_reconnect=True`. If auto-reconnection is disabled, health checks are automatically disabled as well.
+```
+
 ### WebSocket Operations
 
 ```python
@@ -69,7 +111,9 @@ async def main():
     config = ClientConfig(
         host="your-cresnext-host.local",
         username="your_username",
-        password="your_password"
+        password="your_password",
+        health_check_interval=30.0,  # Ping every 30 seconds (default)
+        health_check_timeout=5.0     # 5 second ping timeout (default)
     )
     
     async with CresNextWSClient(config) as client:
@@ -421,7 +465,8 @@ mypy cresnextws/
 - **Context manager support** for automatic connection management
 - **Type hints** for better development experience
 - **Comprehensive logging** support
-- **Automatic reconnection** capabilities
+- **Automatic reconnection** capabilities with connection health monitoring
+- **Health check mechanism** to detect stale connections after system sleep/wake cycles
 - **Flexible path pattern matching** with wildcard and child path support
 - Easy-to-use API for Crestron CresNext systems
 

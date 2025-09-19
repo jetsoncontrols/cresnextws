@@ -50,9 +50,13 @@ class ClientConfig:
         websocket_path (str): Path for WebSocket endpoint
             (default: "/websockify")
         ws_ping_interval (float): Interval in seconds for WebSocket ping
-            (default: 30.0)
+            (default: 10.0)
         reconnect_delay (float): Delay in seconds before reconnection attempt
             (default: 1.0)
+        health_check_interval (float): Interval in seconds for connection health checks
+            to detect stale connections after system sleep/wake (default: 30.0)
+        health_check_timeout (float): Timeout in seconds for health check responses
+            (default: 5.0)
     """
 
     host: str
@@ -63,8 +67,10 @@ class ClientConfig:
     auth_path: str = "/userlogin.html"  # REST auth path
     logout_path: str = "/logout"  # REST logout path
     websocket_path: str = "/websockify"  # WebSocket path
-    ws_ping_interval: float = 10.0  # Ping every 30 seconds
+    ws_ping_interval: float = 10.0  # Ping every 10 seconds
     reconnect_delay: float = 1.0  # Wait 1 second before reconnect
+    health_check_interval: float = 30.0  # Health check every 30 seconds
+    health_check_timeout: float = 5.0  # Health check timeout
 
 
 class CresNextWSClient:
@@ -93,7 +99,12 @@ class CresNextWSClient:
 
         # Background tasks and message queue
         self._recv_task = None
+        self._health_check_task = None
         self._inbound_queue = asyncio.Queue()
+        
+        # Health check state
+        self._last_health_check = 0.0
+        self._health_check_pending = False
 
         # Connection status event handlers
         self._connection_status_handlers: List[Callable[[ConnectionStatus], None]] = []
@@ -354,6 +365,9 @@ class CresNextWSClient:
             self._connected = True
             # Start receive task
             self._recv_task = asyncio.create_task(self._recv_loop())
+            
+            # Start health check task to detect stale connections (e.g., after system sleep)
+            self._health_check_task = asyncio.create_task(self._health_check_loop())
 
             logger.info("WebSocket connection established")
             self._notify_status_change(ConnectionStatus.CONNECTED)
@@ -432,6 +446,15 @@ class CresNextWSClient:
                 pass
             self._recv_task = None
 
+        # Cancel health check task
+        if self._health_check_task and not self._health_check_task.done():
+            self._health_check_task.cancel()
+            try:
+                await self._health_check_task
+            except asyncio.CancelledError:
+                pass
+            self._health_check_task = None
+
         # Close WebSocket
         if self._websocket:
             try:
@@ -490,6 +513,70 @@ class CresNextWSClient:
             logger.error(f"Receive loop error: {e}")
             if self.config.auto_reconnect:
                 await self._handle_disconnection()
+
+    async def _health_check_loop(self) -> None:
+        """
+        Background task that performs periodic health checks to detect stale connections.
+        
+        This is particularly useful for detecting connections that become stale after
+        system sleep/wake cycles, where the WebSocket may appear connected but the
+        underlying network connection is dead.
+        """
+        logger.debug("Starting connection health check loop")
+        
+        try:
+            while self._connected:
+                try:
+                    # Wait for the health check interval
+                    await asyncio.sleep(self.config.health_check_interval)
+                    
+                    if not self._connected:
+                        break
+                    
+                    # Skip health check if one is already pending
+                    if self._health_check_pending:
+                        logger.debug("Health check already pending, skipping")
+                        continue
+                    
+                    logger.debug("Performing connection health check")
+                    self._health_check_pending = True
+                    
+                    # Send a simple health check request - request a lightweight path
+                    # We'll use the ping mechanism built into WebSockets with a shorter timeout
+                    try:
+                        if self._websocket:
+                            # Use the WebSocket's built-in ping method with our configured timeout
+                            pong_waiter = await self._websocket.ping()
+                            await asyncio.wait_for(pong_waiter, timeout=self.config.health_check_timeout)
+                            logger.debug("Health check passed")
+                    except (asyncio.TimeoutError, ConnectionClosed, WebSocketException) as e:
+                        logger.warning(f"Health check failed: {e}")
+                        # Health check failed - connection is likely stale
+                        if self.config.auto_reconnect:
+                            logger.info("Health check detected stale connection, triggering reconnection")
+                            await self._handle_disconnection()
+                            break
+                    except Exception as e:
+                        logger.error(f"Unexpected error during health check: {e}")
+                    finally:
+                        self._health_check_pending = False
+                        
+                except asyncio.CancelledError:
+                    logger.debug("Health check loop cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"Error in health check loop: {e}")
+                    # Continue health checks even if one fails
+                    self._health_check_pending = False
+                    await asyncio.sleep(self.config.health_check_interval)
+                    
+        except asyncio.CancelledError:
+            logger.debug("Health check loop cancelled")
+        except Exception as e:
+            logger.error(f"Health check loop error: {e}")
+        finally:
+            logger.debug("Health check loop ended")
+            self._health_check_pending = False
 
     async def next_message(
         self, timeout: Optional[float] = None

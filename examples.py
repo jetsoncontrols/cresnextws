@@ -8,6 +8,7 @@ Examples are based on real usage patterns found in the test suite (see tests/ di
 Includes examples for:
 - Basic HTTP/WebSocket operations
 - Configuration management
+- Health check configuration for connection reliability
 - Context manager usage
 - DataEventManager with various subscription patterns
 - DataEventManager full_message option (new feature)
@@ -238,6 +239,63 @@ async def config_example():
     base_url = client.get_base_endpoint()
     print(f"Base HTTPS endpoint: {base_url}")
     print("This base URL is used for all HTTP requests and WebSocket origins.")
+
+
+async def health_check_example():
+    """Health check configuration example for connection reliability."""
+    print("\n=== Health Check Example ===")
+    print("Demonstrates automatic health monitoring and reconnection after system sleep/wake.")
+    
+    config = ClientConfig(
+        host="example.cresnext.local",
+        username="admin",
+        password="password",
+        auto_reconnect=True,            # Required for health check
+        health_check_interval=10.0,     # Check every 10 seconds (faster for demo)
+        health_check_timeout=3.0        # 3 second timeout
+    )
+    
+    def on_status_change(status: ConnectionStatus):
+        """Monitor connection status changes."""
+        timestamp = asyncio.get_event_loop().time()
+        print(f"[{timestamp:.1f}] Connection status: {status}")
+        
+        if status == ConnectionStatus.RECONNECTING:
+            print("  -> Health check detected stale connection, reconnecting...")
+    
+    client = CresNextWSClient(config)
+    client.add_connection_status_handler(on_status_change)
+    
+    try:
+        print("Connecting with health check enabled...")
+        await client.connect()
+        print("✓ Connected")
+        
+        print(f"Health check will ping every {config.health_check_interval} seconds")
+        print("The health check runs in the background and will detect stale connections")
+        print("(e.g., after system sleep/wake cycles)")
+        
+        print("\nMonitoring for 30 seconds...")
+        print("If you put your computer to sleep and wake it up during this time,")
+        print("you should see the health check detect and reconnect the stale connection.")
+        
+        # Monitor for 30 seconds to demonstrate health check
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < 30:
+            await asyncio.sleep(1)
+            if not client.connected:
+                print("Connection lost, waiting for reconnection...")
+                # Wait a bit for reconnection
+                await asyncio.sleep(5)
+        
+        print("✓ Health check monitoring completed")
+        
+    except Exception as e:
+        print(f"Health check example error: {e}")
+    finally:
+        client.remove_connection_status_handler(on_status_change)
+        await client.disconnect()
+        print("✓ Disconnected")
 
 
 async def data_event_manager_example():
@@ -786,6 +844,7 @@ async def main():
     await basic_example()
     await connection_status_events_example()
     await config_example()
+    await health_check_example()
     await context_manager_example()
     await data_event_manager_example()
     await full_message_example()
