@@ -1,0 +1,156 @@
+name: Publish to PyPI
+
+on:
+  # Trigger on pushes to main branch
+  push:
+    branches:
+      - main
+    # Also trigger on version tags (e.g., v1.0.0, v0.1.1)
+    tags:
+      - 'v*'
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      publish_to_testpypi:
+        description: 'Publish to Test PyPI instead of PyPI'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+        pip install pytest pytest-asyncio black flake8
+    
+    - name: Run linting
+      run: |
+        black --check cresnextws/
+        flake8 cresnextws/ --count --select=E9,F63,F7,F82 --show-source --statistics
+    
+    - name: Run tests
+      run: |
+        pytest tests/ -v
+  
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+    
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
+    
+    - name: Build package
+      run: |
+        python -m build --no-isolation
+    
+    - name: Check package
+      run: |
+        python -m twine check dist/*
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: dist
+        path: dist/
+
+  publish:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    # Only publish on main branch pushes or version tags, not on PRs
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download build artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: dist
+        path: dist/
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+    
+    - name: Install publishing dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install twine
+    
+    - name: Determine target repository
+      id: target
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.publish_to_testpypi }}" == "true" ]]; then
+          echo "repository=testpypi" >> $GITHUB_OUTPUT
+          echo "repository_url=https://test.pypi.org/simple/" >> $GITHUB_OUTPUT
+        elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          echo "repository=pypi" >> $GITHUB_OUTPUT
+          echo "repository_url=https://pypi.org/simple/" >> $GITHUB_OUTPUT
+        elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          echo "repository=testpypi" >> $GITHUB_OUTPUT
+          echo "repository_url=https://test.pypi.org/simple/" >> $GITHUB_OUTPUT
+        else
+          echo "repository=none" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Publish to Test PyPI
+      if: steps.target.outputs.repository == 'testpypi'
+      uses: pypa/gh-action-pypi-publish@v1.8.10
+      with:
+        password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+        repository-url: https://test.pypi.org/legacy/
+        verbose: true
+    
+    - name: Publish to PyPI
+      if: steps.target.outputs.repository == 'pypi'
+      uses: pypa/gh-action-pypi-publish@v1.8.10
+      with:
+        password: ${{ secrets.PYPI_API_TOKEN }}
+        verbose: true
+    
+    - name: Create GitHub Release (for version tags)
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
+        body: |
+          Release ${{ github.ref_name }}
+          
+          This release has been automatically published to PyPI.
+          
+          Install with: `pip install cresnextws==${{ github.ref_name }}`
+        draft: false
+        prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
