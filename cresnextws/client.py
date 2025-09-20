@@ -59,6 +59,10 @@ class ClientConfig:
             (default: 2.0)
         health_check_path (str): Optional WebSocket path to request during health checks
             for additional validation. If None, only WebSocket ping is used (default: None)
+        message_queue_maxsize (int): Maximum number of messages to buffer in the inbound
+            message queue. Limits memory usage and provides backpressure when messages
+            aren't consumed fast enough. Assumes ~1KB average message size, so 5000
+            messages ≈ 5MB memory usage (default: 5000)
     """
 
     host: str
@@ -74,6 +78,7 @@ class ClientConfig:
     health_check_interval: float = 5.0  # Health check every 5 seconds
     health_check_timeout: float = 2.0  # Health check timeout
     health_check_path: Optional[str] = None  # Optional WebSocket path for health check validation
+    message_queue_maxsize: int = 5000  # Inbound message queue size limit (~5MB)
 
 
 class CresNextWSClient:
@@ -103,8 +108,8 @@ class CresNextWSClient:
         # Background tasks and message queue
         self._recv_task = None
         self._health_check_task = None
-        # Limit queue to ~5MB (assuming ~1KB average message size = ~5000 messages)
-        self._inbound_queue = asyncio.Queue(maxsize=5000)
+        # Create inbound message queue with configurable size limit
+        self._inbound_queue = asyncio.Queue(maxsize=self.config.message_queue_maxsize)
 
         # Health check state
         self._last_health_check = 0.0
@@ -116,7 +121,8 @@ class CresNextWSClient:
 
         logger.debug(
             f"CresNextWSClient initialized for {self.config.host} "
-            f"(Auto-reconnect: {self.config.auto_reconnect})"
+            f"(Auto-reconnect: {self.config.auto_reconnect}, "
+            f"Message queue size: {self.config.message_queue_maxsize})"
         )
 
     def add_connection_status_handler(
