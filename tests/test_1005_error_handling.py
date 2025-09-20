@@ -245,4 +245,4 @@ class TestWebSocket1005ErrorHandling:
         client = CresNextWSClient(config)
         
         assert client.config.max_reconnect_delay == 120.0
-        assert client.config.reconnect_delay == 1.0  # Default initial delay
+        assert client.config.reconnect_delay == 0.1  # Default initial delay

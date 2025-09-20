@@ -219,7 +219,6 @@ async def config_example():
         username="admin", 
         password="password",
         auto_reconnect=True,
-        ws_ping_interval=15.0,
         reconnect_delay=2.0,
         auth_path="/userlogin.html",
         websocket_path="/websockify"
@@ -227,7 +226,6 @@ async def config_example():
     
     print(f"Host: {config.host}")
     print(f"Auto-reconnect: {config.auto_reconnect}")
-    print(f"WebSocket ping interval: {config.ws_ping_interval}s")
     print(f"Reconnect delay: {config.reconnect_delay}s")
     print(f"Auth endpoint: {config.auth_path}")
     print(f"WebSocket endpoint: {config.websocket_path}")
@@ -252,7 +250,8 @@ async def health_check_example():
         password="password",
         auto_reconnect=True,            # Required for health check
         health_check_interval=10.0,     # Check every 10 seconds (faster for demo)
-        health_check_timeout=3.0        # 3 second timeout
+        health_check_timeout=3.0,       # 3 second timeout
+        health_check_path="/Device/DeviceInfo/Model"  # Optional: real API call for enhanced validation
     )
     
     def on_status_change(status: ConnectionStatus):
@@ -272,6 +271,9 @@ async def health_check_example():
         print("✓ Connected")
         
         print(f"Health check will ping every {config.health_check_interval} seconds")
+        if config.health_check_path:
+            print(f"Health check will also send WebSocket GET to: {config.health_check_path}")
+            print("This provides enhanced validation by making real API calls to the device")
         print("The health check runs in the background and will detect stale connections")
         print("(e.g., after system sleep/wake cycles)")
         

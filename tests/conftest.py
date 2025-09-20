@@ -230,8 +230,7 @@ def client_config(system_config: Dict[str, Any]) -> ClientConfig:
     auto_reconnect=bool(system_config.get("auto_reconnect", False)),
     auth_path=system_config.get("auth_path", "/userlogin.html"),
     websocket_path=system_config.get("websocket_path", "/websockify"),
-    ws_ping_interval=float(system_config.get("ws_ping_interval", 30.0)),
-    reconnect_delay=float(system_config.get("reconnect_delay", 1.0)),
+    reconnect_delay=float(system_config.get("reconnect_delay", 0.1)),
     )
 
 

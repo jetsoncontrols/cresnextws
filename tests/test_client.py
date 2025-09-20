@@ -43,7 +43,6 @@ def test_client_config_with_custom_urls():
         password="p",
         auth_path="/custom/auth/endpoint",
         websocket_path="/custom/ws/endpoint",
-        ws_ping_interval=15.0,
         reconnect_delay=2.5
     )
     client = CresNextWSClient(config)
@@ -51,7 +50,6 @@ def test_client_config_with_custom_urls():
     assert client.config.host == "test.local"
     assert client.config.auth_path == "/custom/auth/endpoint"
     assert client.config.websocket_path == "/custom/ws/endpoint"
-    assert client.config.ws_ping_interval == 15.0
     assert client.config.reconnect_delay == 2.5
 
 
@@ -61,8 +59,7 @@ def test_client_default_urls():
 
     assert client.config.auth_path == "/userlogin.html"
     assert client.config.websocket_path == "/websockify"
-    assert client.config.ws_ping_interval == 10.0
-    assert client.config.reconnect_delay == 1.0
+    assert client.config.reconnect_delay == 0.1
 
 
 def test_get_base_endpoint():

@@ -44,8 +44,8 @@ class TestWebSocketHealthCheck:
         
         client = CresNextWSClient(config)
         
-        assert client.config.health_check_interval == 30.0  # Default
-        assert client.config.health_check_timeout == 5.0    # Default
+        assert client.config.health_check_interval == 5.0  # Default
+        assert client.config.health_check_timeout == 2.0    # Default
 
     @pytest.mark.asyncio  
     async def test_health_check_task_basic_functionality(self):

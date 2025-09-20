@@ -49,16 +49,16 @@ class ClientConfig:
             (default: "/userlogin.html")
         websocket_path (str): Path for WebSocket endpoint
             (default: "/websockify")
-        ws_ping_interval (float): Interval in seconds for WebSocket ping
-            (default: 10.0)
         reconnect_delay (float): Initial delay in seconds before reconnection attempt
-            (default: 1.0)
+            (default: 0.1)
         max_reconnect_delay (float): Maximum delay in seconds for exponential backoff
-            (default: 60.0)
-        health_check_interval (float): Interval in seconds for connection health checks
-            to detect stale connections after system sleep/wake (default: 30.0)
-        health_check_timeout (float): Timeout in seconds for health check responses
             (default: 5.0)
+        health_check_interval (float): Interval in seconds for connection health checks
+            to detect stale connections (default: 5.0)
+        health_check_timeout (float): Timeout in seconds for health check responses
+            (default: 2.0)
+        health_check_path (str): Optional WebSocket path to request during health checks
+            for additional validation. If None, only WebSocket ping is used (default: None)
     """
 
     host: str
@@ -69,11 +69,11 @@ class ClientConfig:
     auth_path: str = "/userlogin.html"  # REST auth path
     logout_path: str = "/logout"  # REST logout path
     websocket_path: str = "/websockify"  # WebSocket path
-    ws_ping_interval: float = 10.0  # Ping every 10 seconds
-    reconnect_delay: float = 1.0  # Initial reconnect delay
-    max_reconnect_delay: float = 60.0  # Maximum reconnect delay for exponential backoff
-    health_check_interval: float = 30.0  # Health check every 30 seconds
-    health_check_timeout: float = 5.0  # Health check timeout
+    reconnect_delay: float = 0.1  # Initial reconnect delay
+    max_reconnect_delay: float = 5.0  # Maximum reconnect delay for exponential backoff
+    health_check_interval: float = 5.0  # Health check every 5 seconds
+    health_check_timeout: float = 2.0  # Health check timeout
+    health_check_path: Optional[str] = None  # Optional WebSocket path for health check validation
 
 
 class CresNextWSClient:
@@ -360,9 +360,8 @@ class CresNextWSClient:
                         compress_settings={"memLevel": 4},
                     )
                 ],
-                ping_interval=self.config.ws_ping_interval,
-                ping_timeout=5,
-                close_timeout=5,
+                ping_interval=None,  # We'll handle pings manually
+                close_timeout=2,
             )
 
             self._connected = True
@@ -543,6 +542,11 @@ class CresNextWSClient:
         This is particularly useful for detecting connections that become stale after
         system sleep/wake cycles, where the WebSocket may appear connected but the
         underlying network connection is dead.
+        
+        The health check performs two levels of validation:
+        1. WebSocket ping/pong to verify basic connectivity
+        2. Optional WebSocket GET request (if health_check_path is configured) 
+           to ensure real API communication with the device
         """
         logger.debug("Starting connection health check loop")
 
@@ -563,8 +567,7 @@ class CresNextWSClient:
                     logger.debug("Performing connection health check")
                     self._health_check_pending = True
 
-                    # Send a simple health check request - request a lightweight path
-                    # We'll use the ping mechanism built into WebSockets with a shorter timeout
+                    # Send a WebSocket ping for basic connectivity check
                     try:
                         if self._websocket:
                             # Use the WebSocket's built-in ping method with our configured timeout
@@ -572,7 +575,14 @@ class CresNextWSClient:
                             await asyncio.wait_for(
                                 pong_waiter, timeout=self.config.health_check_timeout
                             )
-                            logger.debug("Health check passed")
+                            logger.debug("Health check ping passed")
+                            
+                            # If health_check_path is configured, also send a WebSocket GET request
+                            # This provides additional validation by making a real API call
+                            if self.config.health_check_path:
+                                logger.debug(f"Sending health check WebSocket GET to: {self.config.health_check_path}")
+                                await self.ws_get(self.config.health_check_path)
+                                logger.debug("Health check WebSocket GET sent successfully")
                     except (
                         asyncio.TimeoutError,
                         ConnectionClosed,

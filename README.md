@@ -73,8 +73,9 @@ async def main():
         username="your_username",
         password="your_password",
         auto_reconnect=True,            # Enable automatic reconnection (required for health check)
-        health_check_interval=30.0,     # Check connection health every 30 seconds (default)
-        health_check_timeout=5.0        # Health check ping timeout in seconds (default)
+        health_check_interval=5.0,      # Check connection health every 5 seconds (default)
+        health_check_timeout=2.0,       # Health check ping timeout in seconds (default)
+        health_check_path="/Device/DeviceInfo/Model"  # Optional WebSocket path for enhanced health checks
     )
     
     client = CresNextWSClient(config)
@@ -95,6 +96,7 @@ asyncio.run(main())
 - **Automatic Detection**: Detects stale WebSocket connections after system sleep/wake cycles
 - **Configurable Intervals**: Customize how often to check connection health
 - **Timeout Handling**: Configurable timeout for ping responses
+- **Enhanced Validation**: Optional WebSocket GET requests during health checks for real API validation
 - **Seamless Integration**: Works alongside existing reconnection system
 - **Zero Configuration**: Enabled by default with sensible defaults when `auto_reconnect=True`
 
@@ -112,8 +114,9 @@ async def main():
         host="your-cresnext-host.local",
         username="your_username",
         password="your_password",
-        health_check_interval=30.0,  # Ping every 30 seconds (default)
-        health_check_timeout=5.0     # 5 second ping timeout (default)
+        health_check_interval=5.0,  # Ping every 5 seconds (default)
+        health_check_timeout=2.0,   # 2 second ping timeout (default)
+        health_check_path="/Device/DeviceInfo/Model"  # Optional WebSocket GET for enhanced validation
     )
     
     async with CresNextWSClient(config) as client:
