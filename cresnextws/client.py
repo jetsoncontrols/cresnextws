@@ -103,7 +103,8 @@ class CresNextWSClient:
         # Background tasks and message queue
         self._recv_task = None
         self._health_check_task = None
-        self._inbound_queue = asyncio.Queue()
+        # Limit queue to ~5MB (assuming ~1KB average message size = ~5000 messages)
+        self._inbound_queue = asyncio.Queue(maxsize=5000)
 
         # Health check state
         self._last_health_check = 0.0
@@ -473,6 +474,18 @@ class CresNextWSClient:
             except Exception as e:
                 logger.debug(f"Error closing WebSocket: {e}")
             self._websocket = None
+
+        # Clear any remaining messages from the queue to prevent memory leaks
+        cleared_count = 0
+        while not self._inbound_queue.empty():
+            try:
+                self._inbound_queue.get_nowait()
+                cleared_count += 1
+            except asyncio.QueueEmpty:
+                break
+        
+        if cleared_count > 0:
+            logger.debug(f"Cleared {cleared_count} unprocessed messages from queue during cleanup")
 
     async def _recv_loop(self) -> None:
         """Background task that receives messages from the WebSocket.
