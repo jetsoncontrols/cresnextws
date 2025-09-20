@@ -9,10 +9,13 @@ Includes examples for:
 - Basic HTTP/WebSocket operations
 - Configuration management
 - Health check configuration for connection reliability
+- Health check with enhanced path validation
 - Context manager usage
 - DataEventManager with various subscription patterns
 - DataEventManager full_message option (new feature)
 - DataEventManager as context manager (auto-cleanup)
+- DataEventManager auto-restart functionality
+- Manual restart control for DataEventManager
 - Device monitoring with specialized callbacks
 - WebSocket message handling
 - Advanced batch operations
@@ -838,6 +841,282 @@ async def device_monitoring_example():
         print("✓ Disconnected and cleaned up")
 
 
+async def auto_restart_example():
+    """
+    Demonstrate automatic monitoring restart on reconnection.
+    """
+    print("\n=== DataEventManager Auto-Restart Example ===")
+    print("This example shows how monitoring automatically restarts after reconnection")
+    print()
+
+    def on_device_data(path: str, data):
+        """Callback for device data changes."""
+        print(f"📊 Device data changed: {path} = {data}")
+
+    def on_connection_status(status: ConnectionStatus):
+        """Callback to monitor connection status changes."""
+        if status == ConnectionStatus.CONNECTED:
+            print("🟢 Client connected!")
+        elif status == ConnectionStatus.DISCONNECTED:
+            print("🔴 Client disconnected!")
+        elif status == ConnectionStatus.CONNECTING:
+            print("🟡 Client connecting...")
+        elif status == ConnectionStatus.RECONNECTING:
+            print("🟠 Client reconnecting...")
+
+    # Create client with auto-reconnect enabled
+    client = CresNextWSClient(
+        ClientConfig(
+            host="example.cresnext.local",  # Update with your device hostname
+            username="admin",
+            password="password",
+            auto_reconnect=True,
+            reconnect_delay=1.0,  # Quick reconnect for demo
+            max_reconnect_delay=5.0,
+        )
+    )
+
+    # Add connection status handler to see what's happening
+    client.add_connection_status_handler(on_connection_status)
+
+    # Create DataEventManager with auto-restart enabled (default)
+    data_manager = DataEventManager(client, auto_restart_monitoring=True)
+
+    try:
+        # Connect to the system
+        print(f"Connecting to {client.config.host}...")
+        if not await client.connect():
+            print("❌ Failed to connect to the system")
+            return
+
+        # Set up some subscriptions
+        print("\n📋 Setting up data subscriptions...")
+        sub1 = data_manager.subscribe("/Device/Info/*", on_device_data)
+        sub2 = data_manager.subscribe("/Device/Network/*", on_device_data)
+        print(f"Created subscriptions: {sub1}, {sub2}")
+
+        # Start monitoring
+        print("\n🎯 Starting message monitoring...")
+        await data_manager.start_monitoring()
+        print(f"Monitoring status: {data_manager.is_monitoring}")
+        print(f"Auto-restart enabled: {data_manager.auto_restart_monitoring}")
+
+        # Request some initial data
+        print("\n📡 Requesting device information...")
+        await client.ws_get("/Device/Info")
+        await client.ws_get("/Device/Network/Interface")
+
+        # Monitor for a while
+        print("\n👀 Monitoring for messages (30 seconds)...")
+        print("💡 Try disconnecting/reconnecting the device or network to see auto-restart in action")
+        
+        for i in range(30):
+            await asyncio.sleep(1)
+            
+            # Show status every 5 seconds
+            if i % 5 == 0:
+                status = client.get_connection_status()
+                monitoring = data_manager.is_monitoring
+                print(f"⏰ {i+1}s - Status: {status.value}, Monitoring: {monitoring}")
+
+        print("\n✅ Example completed successfully")
+        
+    except KeyboardInterrupt:
+        print("\n⏹️  Example interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+    finally:
+        # Clean up
+        print("\n🧹 Cleaning up...")
+        await data_manager.stop_monitoring()
+        data_manager.cleanup()  # Remove connection status handler
+        await client.disconnect()
+
+
+async def manual_restart_example():
+    """
+    Demonstrate manual control over monitoring restart.
+    """
+    print("\n=== Manual Restart Control Example ===")
+    print("This example shows how to disable auto-restart and manually control monitoring")
+    print()
+
+    def on_device_data(path: str, data):
+        """Callback for device data changes."""
+        print(f"📊 Device data changed: {path} = {data}")
+
+    client = CresNextWSClient(
+        ClientConfig(
+            host="example.cresnext.local",
+            username="admin", 
+            password="password",
+            auto_reconnect=True,
+        )
+    )
+
+    # Create DataEventManager with auto-restart DISABLED
+    data_manager = DataEventManager(client, auto_restart_monitoring=False)
+
+    # Add our own connection status handler for manual control
+    def manual_connection_handler(status: ConnectionStatus):
+        print(f"🔧 Manual handler - Connection status: {status.value}")
+        
+        if status == ConnectionStatus.CONNECTED:
+            if not data_manager.is_monitoring:
+                print("🔧 Manually restarting monitoring...")
+                # Create task for async operation since handler must be sync
+                async def restart_monitoring():
+                    try:
+                        await data_manager.start_monitoring()
+                        print("🔧 Monitoring restarted successfully")
+                    except Exception as e:
+                        print(f"🔧 Failed to restart monitoring: {e}")
+                
+                asyncio.create_task(restart_monitoring())
+
+    client.add_connection_status_handler(manual_connection_handler)
+
+    try:
+        print(f"Connecting to {client.config.host}...")
+        if not await client.connect():
+            print("❌ Failed to connect")
+            return
+
+        data_manager.subscribe("/Device/*", on_device_data)
+        await data_manager.start_monitoring()
+
+        print(f"Auto-restart disabled: {not data_manager.auto_restart_monitoring}")
+        print("Monitor for connection changes (15 seconds)...")
+        
+        await asyncio.sleep(15)
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    finally:
+        await data_manager.stop_monitoring()
+        data_manager.cleanup()
+        await client.disconnect()
+
+
+async def auto_restart_context_manager_example():
+    """
+    Demonstrate using DataEventManager as context manager with auto-restart.
+    """
+    print("\n=== Context Manager with Auto-Restart Example ===")
+    print()
+
+    def on_device_data(path: str, data):
+        """Callback for device data changes."""
+        print(f"📊 Device data changed: {path} = {data}")
+
+    def on_connection_status(status: ConnectionStatus):
+        """Callback to monitor connection status changes."""
+        if status == ConnectionStatus.CONNECTED:
+            print("🟢 Client connected!")
+        elif status == ConnectionStatus.DISCONNECTED:
+            print("🔴 Client disconnected!")
+        elif status == ConnectionStatus.CONNECTING:
+            print("🟡 Client connecting...")
+        elif status == ConnectionStatus.RECONNECTING:
+            print("🟠 Client reconnecting...")
+
+    client = CresNextWSClient(
+        ClientConfig(
+            host="example.cresnext.local",
+            username="admin",
+            password="password",
+            auto_reconnect=True,
+        )
+    )
+
+    client.add_connection_status_handler(on_connection_status)
+
+    try:
+        await client.connect()
+        
+        # Using as context manager automatically starts monitoring and cleans up
+        async with DataEventManager(client, auto_restart_monitoring=True) as data_manager:
+            print(f"✨ Context manager started monitoring: {data_manager.is_monitoring}")
+            
+            data_manager.subscribe("/Device/SystemInfo/*", on_device_data)
+            await client.ws_get("/Device/SystemInfo")
+            
+            print("Monitoring in context for 10 seconds...")
+            await asyncio.sleep(10)
+            
+        # Monitoring is automatically stopped and cleaned up here
+        print("✨ Context manager automatically cleaned up")
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    finally:
+        await client.disconnect()
+
+
+async def health_check_path_example():
+    """Demonstrate health check with WebSocket GET path validation."""
+    print("\n=== Health Check Path Example ===")
+    print("Demonstrates enhanced health checking with real API calls")
+    
+    # Configure with health check path for enhanced validation
+    config = ClientConfig(
+        host="example.cresnext.local",
+        username="admin",
+        password="password",
+        auto_reconnect=True,
+        health_check_interval=10.0,     # Check every 10 seconds
+        health_check_timeout=3.0,       # 3 second timeout
+        health_check_path="/Device/DeviceInfo/Model"  # Real API call for validation
+    )
+    
+    def on_status_change(status: ConnectionStatus):
+        """Monitor connection status changes."""
+        timestamp = asyncio.get_event_loop().time()
+        print(f"[{timestamp:.1f}] Connection status: {status}")
+        
+        if status == ConnectionStatus.RECONNECTING:
+            print("  -> Health check detected stale connection, reconnecting...")
+    
+    client = CresNextWSClient(config)
+    client.add_connection_status_handler(on_status_change)
+    
+    try:
+        print("Connecting with enhanced health check...")
+        await client.connect()
+        print("✓ Connected")
+        
+        print("Health check configuration:")
+        print(f"  - Ping interval: {config.health_check_interval} seconds")
+        print(f"  - Ping timeout: {config.health_check_timeout} seconds")
+        print(f"  - Enhanced path: {config.health_check_path}")
+        print()
+        print("The health check will:")
+        print("1. Send WebSocket ping/pong for basic connectivity")
+        print("2. Send WebSocket GET to the configured path for real API validation")
+        print("This provides more robust detection of connection issues")
+        print()
+        
+        print("Monitoring for 30 seconds...")
+        print("You can simulate connection issues to see the enhanced health check in action")
+        
+        # Monitor for 30 seconds to demonstrate health check
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < 30:
+            await asyncio.sleep(1)
+            if not client.connected:
+                print("Connection lost, waiting for reconnection...")
+                await asyncio.sleep(5)
+        
+        print("✓ Enhanced health check monitoring completed")
+        
+    except Exception as e:
+        print(f"Health check path example error: {e}")
+    finally:
+        client.remove_connection_status_handler(on_status_change)
+        await client.disconnect()
+        print("✓ Disconnected")
+
+
 async def main():
     """Run all examples."""
     print("CresNext WebSocket Client Examples")
@@ -847,11 +1126,15 @@ async def main():
     await connection_status_events_example()
     await config_example()
     await health_check_example()
+    await health_check_path_example()
     await context_manager_example()
     await data_event_manager_example()
     await full_message_example()
     await data_event_manager_context_example()
     await device_monitoring_example()
+    await auto_restart_example()
+    await manual_restart_example()
+    await auto_restart_context_manager_example()
     await websocket_message_handling_example()
     await advanced_operations_example()
     await batch_operations_example()
