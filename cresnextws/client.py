@@ -518,7 +518,17 @@ class CresNextWSClient:
                             # Find end of first complete JSON object
                             decoder = json.JSONDecoder()
                             payload, idx = decoder.raw_decode(buffer)
-                            await self._inbound_queue.put(payload)
+                            
+                            # Try to add message to queue without blocking
+                            try:
+                                self._inbound_queue.put_nowait(payload)
+                            except asyncio.QueueFull:
+                                logger.warning(
+                                    f"Message queue is full ({self._inbound_queue.maxsize} messages). "
+                                    "Messages are not being consumed fast enough. Dropping message."
+                                )
+                                # Message is dropped - could optionally implement other strategies here
+                            
                             buffer = buffer[
                                 idx:
                             ].lstrip()  # Remove parsed JSON, skip whitespace
