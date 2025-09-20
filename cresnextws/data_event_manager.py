@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, List, Callable, Optional, Tuple
 from dataclasses import dataclass, field
 import fnmatch
-from .client import CresNextWSClient
+from .client import CresNextWSClient, ConnectionStatus
 
 
 logger = logging.getLogger(__name__)
@@ -54,19 +54,72 @@ class DataEventManager:
     triggers callbacks when matching data is received.
     """
 
-    def __init__(self, client: CresNextWSClient):
+    def __init__(self, client: CresNextWSClient, auto_restart_monitoring: bool = True):
         """
         Initialize the Data Event Manager.
 
         Args:
             client (CresNextWSClient): The WebSocket client to monitor
+            auto_restart_monitoring (bool): Whether to automatically restart monitoring
+                                          when the client reconnects (default: True)
         """
         self.client = client
         self._subscriptions: Dict[str, Subscription] = {}
         self._monitor_task: Optional[asyncio.Task] = None
         self._running = False
+        self._auto_restart_monitoring = auto_restart_monitoring
+        self._was_monitoring_before_disconnect = False
 
-        logger.debug("DataEventManager initialized")
+        # Add connection status handler to automatically restart monitoring on reconnect
+        self._connection_status_handler = self._handle_connection_status_change
+        self.client.add_connection_status_handler(self._connection_status_handler)
+
+        logger.debug(f"DataEventManager initialized (auto_restart_monitoring: {auto_restart_monitoring})")
+
+    def _handle_connection_status_change(self, status: ConnectionStatus) -> None:
+        """
+        Handle connection status changes from the client.
+
+        Automatically restarts monitoring when the client reconnects if auto_restart_monitoring
+        is enabled and monitoring was previously active.
+
+        Args:
+            status (ConnectionStatus): The new connection status
+        """
+        logger.debug(f"Connection status changed to: {status.value}")
+
+        if status == ConnectionStatus.DISCONNECTED:
+            # Remember if we were monitoring before disconnect so we can restart if needed
+            self._was_monitoring_before_disconnect = self._running
+            if self._running:
+                logger.debug("Client disconnected while monitoring was active")
+
+        elif status == ConnectionStatus.CONNECTED:
+            # Auto-restart monitoring if it was active before disconnect and auto-restart is enabled
+            if (self._auto_restart_monitoring and 
+                self._was_monitoring_before_disconnect and 
+                not self._running):
+                logger.info("Client reconnected, automatically restarting monitoring")
+                # Create a task to start monitoring (can't await in a callback)
+                # Only if there's a running event loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._restart_monitoring_async())
+                except RuntimeError:
+                    # No event loop running, likely in a test - just log the attempt
+                    logger.debug("Attempted to restart monitoring but no event loop running")
+
+    async def _restart_monitoring_async(self) -> None:
+        """
+        Async helper to restart monitoring after reconnection.
+        
+        This is called from the connection status handler callback.
+        """
+        try:
+            await self.start_monitoring()
+            logger.info("Monitoring successfully restarted after reconnection")
+        except Exception as e:
+            logger.error(f"Failed to restart monitoring after reconnection: {e}")
 
     def subscribe(
         self,
@@ -404,6 +457,39 @@ class DataEventManager:
         """
         return len(self._subscriptions)
 
+    @property
+    def auto_restart_monitoring(self) -> bool:
+        """
+        Check if automatic monitoring restart on reconnection is enabled.
+
+        Returns:
+            bool: True if auto-restart is enabled, False otherwise
+        """
+        return self._auto_restart_monitoring
+
+    @auto_restart_monitoring.setter
+    def auto_restart_monitoring(self, value: bool) -> None:
+        """
+        Enable or disable automatic monitoring restart on reconnection.
+
+        Args:
+            value (bool): True to enable auto-restart, False to disable
+        """
+        self._auto_restart_monitoring = value
+        logger.debug(f"Auto-restart monitoring set to: {value}")
+
+    def cleanup(self) -> None:
+        """
+        Clean up resources and remove connection status handler.
+        
+        This should be called when the DataEventManager is no longer needed
+        to properly clean up the connection status handler.
+        """
+        if self._connection_status_handler:
+            self.client.remove_connection_status_handler(self._connection_status_handler)
+            self._connection_status_handler = None
+            logger.debug("Removed connection status handler")
+
     async def __aenter__(self) -> "DataEventManager":
         """Async context manager entry."""
         await self.start_monitoring()
@@ -417,3 +503,4 @@ class DataEventManager:
     ) -> None:
         """Async context manager exit."""
         await self.stop_monitoring()
+        self.cleanup()

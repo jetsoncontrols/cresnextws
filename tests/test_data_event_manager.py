@@ -339,3 +339,156 @@ class TestSubscription:
         
         assert sub.full_message is True
         assert sub.match_children is True
+
+
+class TestDataEventManagerAutoRestart:
+    """Test cases for DataEventManager auto-restart functionality."""
+
+    @pytest.fixture
+    def mock_client_with_handlers(self):
+        """Create a mock client with connection status handler support."""
+        client = Mock(spec=CresNextWSClient)
+        client.connected = True
+        client.next_message = AsyncMock()
+        client.add_connection_status_handler = Mock()
+        client.remove_connection_status_handler = Mock()
+        return client
+
+    def test_init_with_auto_restart_enabled(self, mock_client_with_handlers):
+        """Test DataEventManager initialization with auto-restart enabled."""
+        manager = DataEventManager(mock_client_with_handlers, auto_restart_monitoring=True)
+        
+        assert manager.client == mock_client_with_handlers
+        assert manager.auto_restart_monitoring is True
+        assert manager._was_monitoring_before_disconnect is False
+        
+        # Should have registered a connection status handler
+        mock_client_with_handlers.add_connection_status_handler.assert_called_once()
+
+    def test_init_with_auto_restart_disabled(self, mock_client_with_handlers):
+        """Test DataEventManager initialization with auto-restart disabled."""
+        manager = DataEventManager(mock_client_with_handlers, auto_restart_monitoring=False)
+        
+        assert manager.auto_restart_monitoring is False
+        
+        # Should still register handler (for tracking state)
+        mock_client_with_handlers.add_connection_status_handler.assert_called_once()
+
+    def test_auto_restart_property(self, mock_client_with_handlers):
+        """Test auto_restart_monitoring property getter/setter."""
+        manager = DataEventManager(mock_client_with_handlers)
+        
+        # Test default value
+        assert manager.auto_restart_monitoring is True
+        
+        # Test setter
+        manager.auto_restart_monitoring = False
+        assert manager.auto_restart_monitoring is False
+        
+        manager.auto_restart_monitoring = True
+        assert manager.auto_restart_monitoring is True
+
+    def test_cleanup_removes_handler(self, mock_client_with_handlers):
+        """Test that cleanup removes the connection status handler."""
+        manager = DataEventManager(mock_client_with_handlers)
+        
+        # Verify handler was added
+        mock_client_with_handlers.add_connection_status_handler.assert_called_once()
+        
+        # Call cleanup
+        manager.cleanup()
+        
+        # Verify handler was removed
+        mock_client_with_handlers.remove_connection_status_handler.assert_called_once()
+
+    def test_connection_status_handler_disconnect(self, mock_client_with_handlers):
+        """Test connection status handler on disconnect."""
+        from cresnextws import ConnectionStatus
+        
+        manager = DataEventManager(mock_client_with_handlers)
+        manager._running = True  # Simulate monitoring was active
+        
+        # Get the registered handler
+        call_args = mock_client_with_handlers.add_connection_status_handler.call_args
+        handler = call_args[0][0]
+        
+        # Simulate disconnect
+        handler(ConnectionStatus.DISCONNECTED)
+        
+        # Should remember that monitoring was active
+        assert manager._was_monitoring_before_disconnect is True
+
+    def test_connection_status_handler_connect_with_restart(self, mock_client_with_handlers):
+        """Test connection status handler on connect with auto-restart."""
+        from cresnextws import ConnectionStatus
+        
+        manager = DataEventManager(mock_client_with_handlers, auto_restart_monitoring=True)
+        manager._was_monitoring_before_disconnect = True  # Simulate previous monitoring
+        manager._running = False  # Currently not monitoring
+        
+        # Mock start_monitoring
+        manager.start_monitoring = AsyncMock()
+        
+        # Get the registered handler
+        call_args = mock_client_with_handlers.add_connection_status_handler.call_args
+        handler = call_args[0][0]
+        
+        # Simulate reconnect
+        handler(ConnectionStatus.CONNECTED)
+        
+        # Note: The actual start_monitoring call happens in an async task,
+        # so we can't directly verify it was called in this synchronous test.
+        # This tests that the handler logic executes without error.
+
+    def test_connection_status_handler_connect_without_restart(self, mock_client_with_handlers):
+        """Test connection status handler on connect with auto-restart disabled."""
+        from cresnextws import ConnectionStatus
+        
+        manager = DataEventManager(mock_client_with_handlers, auto_restart_monitoring=False)
+        manager._was_monitoring_before_disconnect = True
+        manager._running = False
+        
+        # Mock start_monitoring
+        manager.start_monitoring = AsyncMock()
+        
+        # Get the registered handler
+        call_args = mock_client_with_handlers.add_connection_status_handler.call_args
+        handler = call_args[0][0]
+        
+        # Simulate reconnect
+        handler(ConnectionStatus.CONNECTED)
+        
+        # Should not restart since auto_restart_monitoring is False
+
+    @pytest.mark.asyncio
+    async def test_context_manager_cleanup(self, mock_client_with_handlers):
+        """Test that async context manager calls cleanup on exit."""
+        async with DataEventManager(mock_client_with_handlers) as manager:
+            # Verify handler was added during init
+            mock_client_with_handlers.add_connection_status_handler.assert_called_once()
+            # Verify the manager is created properly
+            assert manager.auto_restart_monitoring is True
+        
+        # Verify handler was removed during cleanup
+        mock_client_with_handlers.remove_connection_status_handler.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_restart_monitoring_async_success(self, mock_client_with_handlers):
+        """Test successful restart of monitoring."""
+        manager = DataEventManager(mock_client_with_handlers)
+        manager.start_monitoring = AsyncMock()
+        
+        await manager._restart_monitoring_async()
+        
+        manager.start_monitoring.assert_called_once()
+
+    @pytest.mark.asyncio 
+    async def test_restart_monitoring_async_failure(self, mock_client_with_handlers):
+        """Test restart of monitoring with failure."""
+        manager = DataEventManager(mock_client_with_handlers)
+        manager.start_monitoring = AsyncMock(side_effect=Exception("Connection failed"))
+        
+        # Should not raise exception, just log error
+        await manager._restart_monitoring_async()
+        
+        manager.start_monitoring.assert_called_once()
