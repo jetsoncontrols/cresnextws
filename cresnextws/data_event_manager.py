@@ -54,34 +54,31 @@ class DataEventManager:
     triggers callbacks when matching data is received.
     """
 
-    def __init__(self, client: CresNextWSClient, auto_restart_monitoring: bool = True):
+    def __init__(self, client: CresNextWSClient):
         """
         Initialize the Data Event Manager.
 
         Args:
             client (CresNextWSClient): The WebSocket client to monitor
-            auto_restart_monitoring (bool): Whether to automatically restart monitoring
-                                          when the client reconnects (default: True)
         """
         self.client = client
         self._subscriptions: Dict[str, Subscription] = {}
         self._monitor_task: Optional[asyncio.Task] = None
         self._running = False
-        self._auto_restart_monitoring = auto_restart_monitoring
         self._was_monitoring_before_disconnect = False
 
         # Add connection status handler to automatically restart monitoring on reconnect
         self._connection_status_handler = self._handle_connection_status_change
         self.client.add_connection_status_handler(self._connection_status_handler)
 
-        logger.debug(f"DataEventManager initialized (auto_restart_monitoring: {auto_restart_monitoring})")
+        logger.debug("DataEventManager initialized")
 
     def _handle_connection_status_change(self, status: ConnectionStatus) -> None:
         """
         Handle connection status changes from the client.
 
-        Automatically restarts monitoring when the client reconnects if auto_restart_monitoring
-        is enabled and monitoring was previously active.
+        Automatically restarts monitoring when the client reconnects if monitoring
+        was previously active. Monitoring will never stop due to disconnection.
 
         Args:
             status (ConnectionStatus): The new connection status
@@ -89,15 +86,14 @@ class DataEventManager:
         logger.debug(f"Connection status changed to: {status.value}")
 
         if status == ConnectionStatus.DISCONNECTED:
-            # Remember if we were monitoring before disconnect so we can restart if needed
+            # Remember if we were monitoring before disconnect so we can restart when reconnected
             self._was_monitoring_before_disconnect = self._running
             if self._running:
-                logger.debug("Client disconnected while monitoring was active")
+                logger.debug("Client disconnected while monitoring was active - monitoring will continue when reconnected")
 
         elif status == ConnectionStatus.CONNECTED:
-            # Auto-restart monitoring if it was active before disconnect and auto-restart is enabled
-            if (self._auto_restart_monitoring and 
-                self._was_monitoring_before_disconnect and 
+            # Always restart monitoring if it was active before disconnect
+            if (self._was_monitoring_before_disconnect and 
                 not self._running):
                 logger.info("Client reconnected, automatically restarting monitoring")
                 # Create a task to start monitoring (can't await in a callback)
@@ -361,14 +357,13 @@ class DataEventManager:
         Start monitoring the WebSocket client for messages.
 
         This method starts a background task that continuously monitors the client's
-        WebSocket connection for incoming messages and processes them.
+        WebSocket connection for incoming messages and processes them. Monitoring
+        will continue even if the client is disconnected and will automatically
+        resume processing when reconnected.
 
         Raises:
-            RuntimeError: If the client is not connected or monitoring is already running
+            RuntimeError: If monitoring is already running
         """
-        if not self.client.connected:
-            raise RuntimeError("Client is not connected. Call client.connect() first.")
-
         if self._running:
             logger.warning("Monitoring is already running")
             return
@@ -404,18 +399,24 @@ class DataEventManager:
         Background task that monitors the WebSocket client for incoming messages.
 
         This loop continuously calls next_message() on the client and processes
-        any received messages through the subscription system.
+        any received messages through the subscription system. The loop will
+        continue running even when disconnected, waiting for reconnection.
         """
         logger.debug("Starting message monitoring loop")
 
         try:
-            while self._running and self.client.connected:
+            while self._running:
                 try:
-                    # Wait for next message with a timeout to allow graceful shutdown
-                    message = await self.client.next_message(timeout=1.0)
+                    # Only try to get messages if connected
+                    if self.client.connected:
+                        # Wait for next message with a timeout to allow graceful shutdown
+                        message = await self.client.next_message(timeout=1.0)
 
-                    if message is not None:
-                        self._process_message(message)
+                        if message is not None:
+                            self._process_message(message)
+                    else:
+                        # Not connected, just wait and check again
+                        await asyncio.sleep(1.0)
 
                 except asyncio.TimeoutError:
                     # Timeout is expected, continue monitoring
@@ -456,27 +457,6 @@ class DataEventManager:
             int: Number of active subscriptions
         """
         return len(self._subscriptions)
-
-    @property
-    def auto_restart_monitoring(self) -> bool:
-        """
-        Check if automatic monitoring restart on reconnection is enabled.
-
-        Returns:
-            bool: True if auto-restart is enabled, False otherwise
-        """
-        return self._auto_restart_monitoring
-
-    @auto_restart_monitoring.setter
-    def auto_restart_monitoring(self, value: bool) -> None:
-        """
-        Enable or disable automatic monitoring restart on reconnection.
-
-        Args:
-            value (bool): True to enable auto-restart, False to disable
-        """
-        self._auto_restart_monitoring = value
-        logger.debug(f"Auto-restart monitoring set to: {value}")
 
     def cleanup(self) -> None:
         """

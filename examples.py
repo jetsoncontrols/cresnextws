@@ -879,8 +879,8 @@ async def auto_restart_example():
     # Add connection status handler to see what's happening
     client.add_connection_status_handler(on_connection_status)
 
-    # Create DataEventManager with auto-restart enabled (default)
-    data_manager = DataEventManager(client, auto_restart_monitoring=True)
+    # Create DataEventManager - monitoring will always restart after reconnection
+    data_manager = DataEventManager(client)
 
     try:
         # Connect to the system
@@ -899,7 +899,7 @@ async def auto_restart_example():
         print("\n🎯 Starting message monitoring...")
         await data_manager.start_monitoring()
         print(f"Monitoring status: {data_manager.is_monitoring}")
-        print(f"Auto-restart enabled: {data_manager.auto_restart_monitoring}")
+        print("Auto-restart always enabled - monitoring will restart after reconnection")
 
         # Request some initial data
         print("\n📡 Requesting device information...")
@@ -954,8 +954,8 @@ async def manual_restart_example():
         )
     )
 
-    # Create DataEventManager with auto-restart DISABLED
-    data_manager = DataEventManager(client, auto_restart_monitoring=False)
+    # Create DataEventManager - monitoring will always restart after reconnection
+    data_manager = DataEventManager(client)
 
     # Add our own connection status handler for manual control
     def manual_connection_handler(status: ConnectionStatus):
@@ -985,7 +985,7 @@ async def manual_restart_example():
         data_manager.subscribe("/Device/*", on_device_data)
         await data_manager.start_monitoring()
 
-        print(f"Auto-restart disabled: {not data_manager.auto_restart_monitoring}")
+        print("Auto-restart always enabled - monitoring will restart after reconnection")
         print("Monitor for connection changes (15 seconds)...")
         
         await asyncio.sleep(15)
@@ -1035,7 +1035,7 @@ async def auto_restart_context_manager_example():
         await client.connect()
         
         # Using as context manager automatically starts monitoring and cleans up
-        async with DataEventManager(client, auto_restart_monitoring=True) as data_manager:
+        async with DataEventManager(client) as data_manager:
             print(f"✨ Context manager started monitoring: {data_manager.is_monitoring}")
             
             data_manager.subscribe("/Device/SystemInfo/*", on_device_data)
