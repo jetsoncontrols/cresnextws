@@ -51,8 +51,10 @@ class ClientConfig:
             (default: "/websockify")
         ws_ping_interval (float): Interval in seconds for WebSocket ping
             (default: 10.0)
-        reconnect_delay (float): Delay in seconds before reconnection attempt
+        reconnect_delay (float): Initial delay in seconds before reconnection attempt
             (default: 1.0)
+        max_reconnect_delay (float): Maximum delay in seconds for exponential backoff
+            (default: 60.0)
         health_check_interval (float): Interval in seconds for connection health checks
             to detect stale connections after system sleep/wake (default: 30.0)
         health_check_timeout (float): Timeout in seconds for health check responses
@@ -68,7 +70,8 @@ class ClientConfig:
     logout_path: str = "/logout"  # REST logout path
     websocket_path: str = "/websockify"  # WebSocket path
     ws_ping_interval: float = 10.0  # Ping every 10 seconds
-    reconnect_delay: float = 1.0  # Wait 1 second before reconnect
+    reconnect_delay: float = 1.0  # Initial reconnect delay
+    max_reconnect_delay: float = 60.0  # Maximum reconnect delay for exponential backoff
     health_check_interval: float = 30.0  # Health check every 30 seconds
     health_check_timeout: float = 5.0  # Health check timeout
 
@@ -407,13 +410,16 @@ class CresNextWSClient:
 
         Continuously attempts to reconnect at intervals specified by
         config.reconnect_delay until successful or auto_reconnect is disabled.
+        Uses exponential backoff to avoid overwhelming the server.
         """
-        try:
-            while self.config.auto_reconnect and not self._connected:
+        current_delay = self.config.reconnect_delay
+        
+        while self.config.auto_reconnect and not self._connected:
+            try:
                 logger.info(
-                    f"Attempting reconnection in {self.config.reconnect_delay} seconds..."
+                    f"Attempting reconnection in {current_delay:.1f} seconds..."
                 )
-                await asyncio.sleep(self.config.reconnect_delay)
+                await asyncio.sleep(current_delay)
 
                 if not self.config.auto_reconnect:
                     break
@@ -425,11 +431,17 @@ class CresNextWSClient:
                     break
                 else:
                     logger.warning("Reconnection failed, will retry...")
+                    # Exponential backoff: double the delay, up to max
+                    current_delay = min(current_delay * 2, self.config.max_reconnect_delay)
 
-        except asyncio.CancelledError:
-            logger.debug("Reconnect loop cancelled")
-        except Exception as e:
-            logger.error(f"Reconnect loop error: {e}")
+            except asyncio.CancelledError:
+                logger.debug("Reconnect loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Reconnect loop error: {e}, will retry...")
+                # Apply exponential backoff even for exceptions
+                current_delay = min(current_delay * 2, self.config.max_reconnect_delay)
+                # Continue the loop to retry even after unexpected exceptions
 
     async def _cleanup_connection(self) -> None:
         """
@@ -506,7 +518,17 @@ class CresNextWSClient:
         except asyncio.CancelledError:
             logger.debug("Receive loop cancelled")
         except (ConnectionClosed, WebSocketException) as e:
-            logger.error(f"WebSocket connection error in receive loop: {e}")
+            # Log specific details for ConnectionClosed errors (like 1005)
+            if isinstance(e, ConnectionClosed):
+                if hasattr(e, 'rcvd') and e.rcvd:
+                    logger.error(f"WebSocket connection error in receive loop: received {e.rcvd.code} ({e.rcvd.reason})")
+                elif hasattr(e, 'sent') and e.sent:
+                    logger.error(f"WebSocket connection error in receive loop: sent {e.sent.code} ({e.sent.reason})")
+                else:
+                    logger.error(f"WebSocket connection error in receive loop: {e}")
+            else:
+                logger.error(f"WebSocket connection error in receive loop: {e}")
+            
             if self.config.auto_reconnect:
                 await self._handle_disconnection()
         except Exception as e:
@@ -556,7 +578,17 @@ class CresNextWSClient:
                         ConnectionClosed,
                         WebSocketException,
                     ) as e:
-                        logger.warning(f"Health check failed: {e}")
+                        # Log specific details for ConnectionClosed errors (like 1005)
+                        if isinstance(e, ConnectionClosed):
+                            if hasattr(e, 'rcvd') and e.rcvd:
+                                logger.warning(f"Health check failed: received {e.rcvd.code} ({e.rcvd.reason})")
+                            elif hasattr(e, 'sent') and e.sent:
+                                logger.warning(f"Health check failed: sent {e.sent.code} ({e.sent.reason})")
+                            else:
+                                logger.warning(f"Health check failed: {e}")
+                        else:
+                            logger.warning(f"Health check failed: {e}")
+                        
                         # Health check failed - connection is likely stale
                         if self.config.auto_reconnect:
                             logger.info(
