@@ -126,8 +126,10 @@ async def connection_status_events_example():
             print("🔴 Client disconnected")
         elif status == ConnectionStatus.CONNECTING:
             print("🟡 Client connecting...")
+        elif status == ConnectionStatus.RECONNECTING_FIRST:
+            print("🔄 First reconnect attempt (usually succeeds quickly)")
         elif status == ConnectionStatus.RECONNECTING:
-            print("🟠 Client reconnecting...")
+            print("🟠 Client reconnecting (connection issues detected)...")
 
     # Create client configuration
     config = ClientConfig(
@@ -861,8 +863,10 @@ async def auto_restart_example():
             print("🔴 Client disconnected!")
         elif status == ConnectionStatus.CONNECTING:
             print("🟡 Client connecting...")
+        elif status == ConnectionStatus.RECONNECTING_FIRST:
+            print("� First reconnect attempt...")
         elif status == ConnectionStatus.RECONNECTING:
-            print("🟠 Client reconnecting...")
+            print("�🟠 Client reconnecting (multiple attempts)...")
 
     # Create client with auto-reconnect enabled
     client = CresNextWSClient(

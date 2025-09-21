@@ -30,6 +30,7 @@ class ConnectionStatus(Enum):
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     RECONNECTING = "reconnecting"
+    RECONNECTING_FIRST = "reconnecting_first"
 
 
 @dataclass
@@ -104,6 +105,7 @@ class CresNextWSClient:
         self._auth_token = None
         self._reconnect_task = None
         self._http_session = None
+        self._is_first_reconnect_attempt = True
 
         # Background tasks and message queue
         self._recv_task = None
@@ -372,6 +374,7 @@ class CresNextWSClient:
             )
 
             self._connected = True
+            self._is_first_reconnect_attempt = True  # Reset for future disconnections
             # Start receive task
             self._recv_task = asyncio.create_task(self._recv_loop())
 
@@ -405,7 +408,10 @@ class CresNextWSClient:
 
         if self.config.auto_reconnect:
             logger.info("Attempting to reconnect...")
-            self._notify_status_change(ConnectionStatus.RECONNECTING)
+            if self._is_first_reconnect_attempt:
+                self._notify_status_change(ConnectionStatus.RECONNECTING_FIRST)
+            else:
+                self._notify_status_change(ConnectionStatus.RECONNECTING)
             # Start reconnection task
             if not self._reconnect_task or self._reconnect_task.done():
                 self._reconnect_task = asyncio.create_task(self._reconnect_loop())
@@ -437,6 +443,11 @@ class CresNextWSClient:
                     break
                 else:
                     logger.warning("Reconnection failed, will retry...")
+                    # If this was the first reconnect attempt and it failed,
+                    # switch to RECONNECTING status for subsequent attempts
+                    if self._is_first_reconnect_attempt:
+                        self._is_first_reconnect_attempt = False
+                        self._notify_status_change(ConnectionStatus.RECONNECTING)
                     # Exponential backoff: double the delay, up to max
                     current_delay = min(current_delay * 2, self.config.max_reconnect_delay)
 
@@ -445,6 +456,11 @@ class CresNextWSClient:
                 break
             except Exception as e:
                 logger.error(f"Reconnect loop error: {e}, will retry...")
+                # If this was the first reconnect attempt and it failed,
+                # switch to RECONNECTING status for subsequent attempts
+                if self._is_first_reconnect_attempt:
+                    self._is_first_reconnect_attempt = False
+                    self._notify_status_change(ConnectionStatus.RECONNECTING)
                 # Apply exponential backoff even for exceptions
                 current_delay = min(current_delay * 2, self.config.max_reconnect_delay)
                 # Continue the loop to retry even after unexpected exceptions
@@ -620,13 +636,13 @@ class CresNextWSClient:
                         # Log specific details for ConnectionClosed errors (like 1005)
                         if isinstance(e, ConnectionClosed):
                             if hasattr(e, 'rcvd') and e.rcvd:
-                                logger.warning(f"Health check failed: received {e.rcvd.code} ({e.rcvd.reason})")
+                                logger.debug(f"Health check failed: received {e.rcvd.code} ({e.rcvd.reason})")
                             elif hasattr(e, 'sent') and e.sent:
-                                logger.warning(f"Health check failed: sent {e.sent.code} ({e.sent.reason})")
+                                logger.debug(f"Health check failed: sent {e.sent.code} ({e.sent.reason})")
                             else:
-                                logger.warning(f"Health check failed: {e}")
+                                logger.debug(f"Health check failed: {e}")
                         else:
-                            logger.warning(f"Health check failed: {e}")
+                            logger.debug(f"Health check failed: {e}")
                         
                         # Health check failed - connection is likely stale
                         if self.config.auto_reconnect:
@@ -719,6 +735,7 @@ class CresNextWSClient:
 
         self._connected = False
         self._auth_token = None
+        self._is_first_reconnect_attempt = True  # Reset for future disconnections
         self._notify_status_change(ConnectionStatus.DISCONNECTED)
         logger.info("Disconnected from CresNext")
 

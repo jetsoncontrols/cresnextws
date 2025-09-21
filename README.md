@@ -149,8 +149,12 @@ def on_status_change(status: ConnectionStatus):
         print("🔴 Disconnected from device")
     elif status == ConnectionStatus.CONNECTING:
         print("🟡 Connecting...")
+    elif status == ConnectionStatus.RECONNECTING_FIRST:
+        print("🔄 First reconnect attempt (usually succeeds quickly)")
+        # Applications can choose to ignore this status to avoid unnecessary UI updates
     elif status == ConnectionStatus.RECONNECTING:
-        print("🟠 Reconnecting...")
+        print("🟠 Reconnecting (connection issues detected)...")
+        # Show this to users as it indicates real connection problems
 
 async def main():
     config = ClientConfig(
@@ -179,6 +183,16 @@ async def main():
 
 asyncio.run(main())
 ```
+
+#### Understanding RECONNECTING_FIRST vs RECONNECTING
+
+The library provides two distinct reconnection statuses to help applications handle reconnections intelligently:
+
+- **`RECONNECTING_FIRST`**: Emitted on the first reconnection attempt after a disconnection. These attempts are usually successful and happen frequently during normal operation (e.g., brief network glitches, system sleep/wake cycles). Applications may choose to ignore this status to avoid unnecessary UI updates or user notifications.
+
+- **`RECONNECTING`**: Emitted when the first reconnection attempt fails and subsequent attempts are being made. This indicates genuine connection issues that applications should present to users (e.g., showing a "reconnecting..." indicator).
+
+**Example use case**: A mobile app can ignore `RECONNECTING_FIRST` to avoid flashing reconnection indicators for brief disconnections, but show a persistent "reconnecting..." message when `RECONNECTING` is emitted.
 
 ### Configuration and Utilities
 
