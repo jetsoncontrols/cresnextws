@@ -91,9 +91,6 @@ jobs:
         elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
           echo "repository=pypi" >> $GITHUB_OUTPUT
           echo "repository_url=https://pypi.org/simple/" >> $GITHUB_OUTPUT
-        elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-          echo "repository=testpypi" >> $GITHUB_OUTPUT
-          echo "repository_url=https://test.pypi.org/simple/" >> $GITHUB_OUTPUT
         else
           echo "repository=none" >> $GITHUB_OUTPUT
         fi
