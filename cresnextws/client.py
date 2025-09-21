@@ -313,8 +313,9 @@ class CresNextWSClient:
             logger.debug("Already connected")
             return True
 
-        # Notify that we're starting the connection process
-        self._notify_status_change(ConnectionStatus.CONNECTING)
+        # Only emit CONNECTING status if we're not already in a reconnection state
+        if self._current_status not in (ConnectionStatus.RECONNECTING_FIRST, ConnectionStatus.RECONNECTING):
+            self._notify_status_change(ConnectionStatus.CONNECTING)
 
         logger.info(f"Connecting to CresNext WS API at {self.config.host}")
 
@@ -326,7 +327,9 @@ class CresNextWSClient:
             if auth_token is None or self._http_session is None:
                 logger.error("Authentication failed; aborting connection")
                 self._connected = False
-                self._notify_status_change(ConnectionStatus.DISCONNECTED)
+                # Only emit DISCONNECTED if we're not in a reconnection state
+                if self._current_status not in (ConnectionStatus.RECONNECTING_FIRST, ConnectionStatus.RECONNECTING):
+                    self._notify_status_change(ConnectionStatus.DISCONNECTED)
                 return False
 
             # Create SSL context in executor to avoid blocking
@@ -388,7 +391,9 @@ class CresNextWSClient:
         except Exception as e:
             logger.error(f"Connection failed: {e}")
             self._connected = False
-            self._notify_status_change(ConnectionStatus.DISCONNECTED)
+            # Only emit DISCONNECTED if we're not in a reconnection state
+            if self._current_status not in (ConnectionStatus.RECONNECTING_FIRST, ConnectionStatus.RECONNECTING):
+                self._notify_status_change(ConnectionStatus.DISCONNECTED)
             return False
 
     async def _handle_disconnection(self) -> None:
