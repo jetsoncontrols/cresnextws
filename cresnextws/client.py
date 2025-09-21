@@ -395,13 +395,16 @@ class CresNextWSClient:
         """
         Handle unexpected disconnection and attempt reconnection if enabled.
 
-        Cleans up the current connection and starts the reconnection loop
-        if auto_reconnect is enabled in the configuration.
+        Cleans up the current connection and either starts the reconnection loop
+        (if auto_reconnect is enabled) or emits DISCONNECTED status.
+        
+        Status transitions:
+        - If auto_reconnect=True: Goes directly to RECONNECTING_FIRST or RECONNECTING
+        - If auto_reconnect=False: Emits DISCONNECTED status
         """
 
         logger.info("Connection lost")
         self._connected = False
-        self._notify_status_change(ConnectionStatus.DISCONNECTED)
 
         # Clean up current connection
         await self._cleanup_connection()
@@ -415,6 +418,9 @@ class CresNextWSClient:
             # Start reconnection task
             if not self._reconnect_task or self._reconnect_task.done():
                 self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        else:
+            # Only emit DISCONNECTED if we're not going to reconnect
+            self._notify_status_change(ConnectionStatus.DISCONNECTED)
 
     async def _reconnect_loop(self) -> None:
         """
