@@ -737,8 +737,8 @@ class CresNextWSClient:
         # Logout and close HTTP session
         if self._http_session:
             try:
-                await self._http_session.get(self._get_logout_endpoint())
-                logger.debug("Logout request sent")
+                async with self._http_session.get(self._get_logout_endpoint()) as resp:
+                    logger.debug(f"Logout request sent, status: {resp.status}")
             except Exception as e:
                 logger.debug(f"Error during logout: {e}")
             await self._http_session.close()
