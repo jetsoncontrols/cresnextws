@@ -10,10 +10,18 @@ import logging
 from typing import Dict, Any, List, Callable, Optional, Tuple
 from dataclasses import dataclass, field
 import fnmatch
+from typing import TYPE_CHECKING
 from .client import CresNextWSClient, ConnectionStatus
+
+if TYPE_CHECKING:  # avoid a circular import at runtime
+    from .subscription_mgr import SubscriptionMgrClient
 
 
 logger = logging.getLogger(__name__)
+
+# Named here so the "unsupported device" message can reference it without
+# importing subscription_mgr at module scope.
+SUBSCRIPTION_MGR_OBJECT = "/Device/SubscriptionMgr"
 
 # Global counter for unique subscription IDs
 _subscription_counter = 0
@@ -66,6 +74,10 @@ class DataEventManager:
         self._monitor_task: Optional[asyncio.Task] = None
         self._running = False
         self._was_monitoring_before_disconnect = False
+        # Opt-in: only set when a caller enables device-side registration for the
+        # few objects that require it (see subscription_mgr). Stays None otherwise,
+        # so devices without a SubscriptionMgr are entirely unaffected.
+        self._subscription_mgr: Optional["SubscriptionMgrClient"] = None
 
         # Add connection status handler to automatically restart monitoring on reconnect
         self._connection_status_handler = self._handle_connection_status_change
@@ -157,6 +169,133 @@ class DataEventManager:
             f"Added subscription {subscription_id} for pattern: {path_pattern}"
         )
         return subscription_id
+
+    async def enable_device_subscriptions(
+        self,
+        client_id: str,
+        paths: List[str],
+        required: bool = False,
+        on_reestablished: Optional[Callable[[], None]] = None,
+    ) -> Optional[str]:
+        """Open the SubscriptionMgr socket, register, and subscribe to ``paths``.
+
+        OPTIONAL. Most CresNext objects push changes on the primary connection with
+        no registration, and :meth:`subscribe` alone is enough for them.
+        ``MediaPlayerNeXt`` on DM-NAX amplifiers does not: it is served by a
+        SEPARATE endpoint (``/subscriptionmgr``) and stays silent until a client
+        registers there and names the paths it wants.
+
+        This opens that second connection using the same credentials as the primary
+        one, and routes its telemetry into the SAME path dispatch — so callers still
+        register interest with :meth:`subscribe` and never need to know which socket
+        a message arrived on.
+
+        Devices that do not serve the endpoint (touch panels, control processors)
+        are detected and skipped, so this is safe to call across a mixed fleet.
+
+        Beware when diagnosing: over the PRIMARY socket the ``/Device/SubscriptionMgr``
+        object looks present but is a stub that reports no ``Version`` and fails
+        requests with ``StatusId: -5``. Only this endpoint serves the real 2.1.0 API.
+
+        Args:
+            client_id: Stable identifier for this client, echoed back by the device
+                as ``RegisteredClientId``. Crestron's examples use a MAC-derived
+                string. Must be stable across reconnects to be recognisable.
+            paths: CresNext object paths to subscribe to.
+            required: When True, raise if the device does not support
+                SubscriptionMgr instead of logging and returning None.
+            on_reestablished: Called after the session is renewed or restored.
+                Sessions expire (1200s on a DM-NAX-4ZSP) and are renewed
+                proactively; renewal replays the subscriptions but cannot replay
+                state that changed during the brief gap, so use this to re-read
+                anything whose current value you depend on.
+
+        Returns:
+            The device-generated ``RcSessionId``, or None if unsupported.
+
+        Raises:
+            SubscriptionMgrError: On request failure, or when unsupported and
+                ``required`` is True.
+        """
+        from .subscription_mgr import (
+            SUBSCRIPTION_MGR_WS_PATH,
+            SubscriptionMgrClient,
+            SubscriptionMgrError,
+        )
+
+        # Telemetry from this second socket is fed through the SAME path-matching
+        # dispatch as the primary connection, so callers subscribe once via
+        # subscribe() and neither know nor care which socket delivered a message.
+        mgr = SubscriptionMgrClient(
+            self.client.config,
+            client_id,
+            on_message=self._process_message,
+            on_reestablished=on_reestablished,
+        )
+
+        if not await mgr.connect():
+            message = (
+                f"Device does not serve {SUBSCRIPTION_MGR_WS_PATH}; "
+                f"device-side subscriptions unavailable"
+            )
+            if required:
+                raise SubscriptionMgrError(message)
+            logger.info("%s — continuing without them", message)
+            return None
+
+        # Assigned before the requests so a mid-flight failure still leaves the
+        # socket reachable for disconnect() to clean up.
+        self._subscription_mgr = mgr
+        try:
+            session_id = await mgr.register()
+            await mgr.subscribe(paths)
+        except Exception:
+            self._subscription_mgr = None
+            await mgr.disconnect()
+            raise
+        return session_id
+
+    @property
+    def device_subscriptions(self) -> Optional["SubscriptionMgrClient"]:
+        """The SubscriptionMgr client, or None when device subscriptions are off."""
+        return self._subscription_mgr
+
+    async def reestablish_device_subscriptions(self) -> Optional[str]:
+        """Re-register and re-subscribe after a reconnect.
+
+        A registration is scoped to the WebSocket connection that created it, so it
+        does not survive a reconnect and must be redone. No-op when device
+        subscriptions were never enabled.
+        """
+        if self._subscription_mgr is None:
+            return None
+        return await self._subscription_mgr.reestablish()
+
+    async def request_object(self, cresnext_object: str) -> bool:
+        """Ask the device to resend an object's current full contents.
+
+        Subscriptions carry only changes, so use this to seed state on startup or
+        after a reconnect/renewal. The object arrives as a normal message and is
+        dispatched to whatever :meth:`subscribe` callbacks match its paths.
+
+        Returns False when device subscriptions are not enabled, so callers can
+        fall back to their own read without special-casing unsupported devices.
+        """
+        if self._subscription_mgr is None or not self._subscription_mgr.is_registered:
+            return False
+        await self._subscription_mgr.get_object(cresnext_object)
+        return True
+
+    async def disable_device_subscriptions(self) -> None:
+        """Unregister and close the SubscriptionMgr socket. No-op if never enabled.
+
+        Worth calling on shutdown: a registration occupies a slot on the device
+        (30 clients max per socket), so leaking one per restart is not free.
+        """
+        if self._subscription_mgr is None:
+            return
+        mgr, self._subscription_mgr = self._subscription_mgr, None
+        await mgr.disconnect()
 
     def unsubscribe(self, subscription_id: str) -> bool:
         """
