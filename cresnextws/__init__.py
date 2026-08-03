@@ -23,6 +23,7 @@ except (ImportError, PackageNotFoundError):
 
 from .client import CresNextWSClient, ClientConfig, ConnectionStatus
 from .data_event_manager import DataEventManager, Subscription
+from .subscription_mgr import SubscriptionMgrClient, SubscriptionMgrError
 
 __all__ = [
     "CresNextWSClient",
@@ -30,6 +31,8 @@ __all__ = [
     "ConnectionStatus",
     "DataEventManager",
     "Subscription",
+    "SubscriptionMgrClient",
+    "SubscriptionMgrError",
     "__version__",
     "__author__",
     "__email__",
