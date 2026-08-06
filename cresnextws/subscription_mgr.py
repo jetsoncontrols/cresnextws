@@ -471,12 +471,14 @@ class SubscriptionMgrClient:
     # -- renewal -------------------------------------------------------------
 
     def _renewal_interval(self) -> Optional[float]:
-        """How long to wait before renewing, or None to not renew at all."""
+        """How long to wait between keepalives, or None to not renew at all."""
         if not self._expiration_secs:
             return None
-        # Half the advertised window: early enough that one failed attempt still
-        # leaves room for another before the session actually dies.
-        return max(30.0, self._expiration_secs / 2)
+        # A QUARTER of the advertised window, where re-registration used a half.
+        # A keepalive is one small request against a session we already hold, so
+        # it is cheap enough to send often, and three consecutive failures still
+        # fit inside the window before anything actually expires.
+        return max(30.0, self._expiration_secs / 4)
 
     def _start_renewal(self) -> None:
         """(Re)start the proactive renewal timer."""
@@ -503,8 +505,45 @@ class SubscriptionMgrClient:
             self._renew_task.cancel()
         self._renew_task = None
 
+    async def _keepalive(self) -> None:
+        """Touch the session so the device does not expire it.
+
+        There is no documented renew verb — the supported actions are register,
+        unregister, subscribe, unsubscribe and get — which is why this used to
+        re-register instead. But ORDINARY TRAFFIC on the session is enough:
+        measured on a DM-NAX-4ZSP (3.1.0103), a session held 28 minutes against a
+        1200s ``ExpirationDurInSecs`` on nothing but a ``GetCresNextObject`` every
+        four minutes, and was still live at every checkpoint.
+
+        Honest limit of that measurement: it had no control arm, so it shows that
+        light traffic keeps a session alive, not strictly that traffic is the
+        thing keeping it alive — a live socket alone might suffice. Both readings
+        say the same thing about what to DO (stop re-registering), and a keepalive
+        is correct under either, so the ambiguity does not need settling first.
+
+        ``GetCresNextObject`` is the right verb to spend on it: it is the one
+        read-only action, and its side effect — the device pushing that object's
+        current contents — is useful rather than merely tolerable, since it
+        re-syncs state that subscriptions (which carry only CHANGES) would never
+        resend.
+        """
+        if not self._rc_session_id:
+            raise SubscriptionMgrError("Not registered — nothing to keep alive")
+        # A path we are already subscribed to, so the push that comes back is
+        # something the consumer already handles. Falls back to the object the
+        # whole API exists to serve.
+        target = (
+            self._subscribed_paths[0]
+            if self._subscribed_paths
+            else "/Device/MediaPlayerNeXt"
+        )
+        await self._request(
+            ACTION_GET_OBJECT,
+            {"RcSessionId": self._rc_session_id, "CresNextObject": target},
+        )
+
     async def _renew_loop(self, interval: float) -> None:
-        """Re-register before the device expires the session.
+        """Keep the session alive, and re-register only if it is actually gone.
 
         Sessions expire after ``ExpirationDurInSecs`` (1200s on a DM-NAX-4ZSP) —
         measured, not assumed: a session registered at T was gone by T+19min.
@@ -514,12 +553,21 @@ class SubscriptionMgrClient:
         If a device ever expires a session while leaving the connection up, no
         reconnect fires, no error is logged, and the feed goes silent forever —
         indistinguishable from the bug this whole module exists to fix, except it
-        appears twenty minutes in. So renew proactively and keep the reconnect
-        handler purely as a backstop.
+        appears twenty minutes in.
 
-        There is no documented "renew" verb — the supported actions are register,
-        unregister, subscribe, unsubscribe and get — so renewal is a fresh
-        register plus a replay of the subscriptions.
+        **This used to re-register every half-window, and that was expensive in a
+        way that was not obvious.** Each cycle was a register + subscribe +
+        unregister against the device's PERSISTENT store — roughly six teardowns
+        an hour, forever, each one logging a CresStore error on the device's own
+        console, and each one a window in which an ill-timed kill strands a
+        session that can never be removed. A keepalive costs one small request and
+        leaves the session, its id and its subscriptions untouched.
+
+        The failure path is now also a better signal than a timer: a keepalive
+        refused with ``INVALID_RC_SESSION_ID`` means the session really is gone,
+        which is precisely when re-registering is the right answer. And because a
+        surviving session never has a gap, ``on_reestablished`` fires only when
+        one genuinely happened, instead of on every renewal.
         """
         try:
             while True:
@@ -528,12 +576,33 @@ class SubscriptionMgrClient:
                     # The reconnect handler will re-establish; nothing to do here.
                     continue
                 try:
-                    # force: renewal exists precisely to replace a session that is
-                    # still live, so the "already live, nothing to do" skip must
-                    # not apply here.
-                    session_id = await self.reestablish(force=True)
+                    await self._keepalive()
                     logger.debug(
-                        "Renewed SubscriptionMgr session (RcSessionId=%s)", session_id
+                        "SubscriptionMgr keepalive OK (RcSessionId=%s)",
+                        self._rc_session_id,
+                    )
+                    continue
+                except SubscriptionMgrError as err:
+                    # The session is gone, or the device refused us. Either way the
+                    # feed is dead and only a fresh registration revives it.
+                    logger.info(
+                        "SubscriptionMgr keepalive refused (%s); re-registering", err
+                    )
+                except Exception as err:  # noqa: BLE001
+                    logger.warning(
+                        "SubscriptionMgr keepalive failed (will retry in %.0fs): %s",
+                        interval,
+                        err,
+                    )
+                    continue
+
+                try:
+                    # force: we have just established the session is not usable, so
+                    # the "already live, skip" path must not short-circuit this.
+                    session_id = await self.reestablish(force=True)
+                    logger.info(
+                        "Re-registered with SubscriptionMgr (RcSessionId=%s)",
+                        session_id,
                     )
                     if self._on_reestablished is not None:
                         try:
@@ -541,10 +610,11 @@ class SubscriptionMgrClient:
                         except Exception:  # noqa: BLE001
                             logger.exception("SubscriptionMgr renewal callback raised")
                 except Exception as err:  # noqa: BLE001
-                    # Half-window timing means a transient failure still leaves
-                    # time for the next attempt before the session actually dies.
+                    # Quarter-window timing means a transient failure still leaves
+                    # room for several attempts before the session actually dies.
                     logger.warning(
-                        "SubscriptionMgr renewal failed (will retry in %.0fs): %s",
+                        "SubscriptionMgr re-registration failed "
+                        "(will retry in %.0fs): %s",
                         interval,
                         err,
                     )
