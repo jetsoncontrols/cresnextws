@@ -76,6 +76,20 @@ DEFAULT_TIMEOUT = 15.0
 # Home Assistant closed the socket 3ms after the POST and stranded one session on
 # every single reload, restart and reconnect.
 #
+# The gap is a PERSISTENT-STORE write, which is why it is slow and why an
+# abandoned record outlives both a reboot and a hard power cycle. The device's own
+# console names the layer, one line per teardown:
+#
+#   Error: SubscriptionManager # CresStoreInterface:readJson: getValueFromCresstore:
+#   json '{"Device":{"SubscriptionMgr":{"RegisteredClientList":{"<sid>":
+#   {"SubscribedTo":{}}}}}}' returned null and result 1
+#
+# Note the emptied SubscribedTo: that is the removal in progress, reading the key
+# back and finding it gone. Removals still complete (10/10 verified in one batch),
+# so treat it as noisy read-after-delete rather than a failure — but it is the
+# device's own error channel firing on a routine operation, and the best candidate
+# for what eventually wedged a SubscriptionMgr into acknowledging nothing at all.
+#
 # Generous against the measured figure because being slow here costs a moment of
 # teardown, while being early costs a permanent slot on the device. Normally
 # returns in well under a second — this is a ceiling, not a sleep.
