@@ -28,8 +28,19 @@ have no SubscriptionMgr at all. Nothing here runs unless a caller asks for it, a
 raising, so it is safe to enable across a mixed fleet.
 
 Lifecycle: a registration lives under ``WsConnectionsList/<WsNN>`` — it is scoped to
-the WebSocket connection that created it, dies with that socket, and must be redone
-after a reconnect. It is not a durable server-side record.
+the WebSocket connection that created it and must be redone after a reconnect.
+
+But it does NOT die with that socket, and this is the trap that matters most. The
+socket going away removes the session from ``WsConnectionsList`` while leaving it in
+the top-level ``RegisteredClientList``, where it stays — past ``ExpirationDurInSecs``,
+and across a device reboot. It cannot be removed afterwards either: the device
+refuses ``UnregisterClient`` for a session with no live socket
+(``StatusId: -4 INVALID_RC_SESSION_ID``), singly or in a batch, though the same call
+against a live session succeeds. So every ungraceful shutdown strands one session on
+the device permanently, and the only defence is to unregister while the socket is
+still up — which is what :meth:`SubscriptionMgrClient._release_previous_session`
+exists to do. None of this is in Crestron's API reference, which says nothing about
+socket-close cleanup or any cap. Measured on a DM-NAX-4ZSP (3.1.0103).
 """
 
 from __future__ import annotations
@@ -54,6 +65,22 @@ ACTION_UNSUBSCRIBE = "UnsubscribeFromObject"
 ACTION_GET_OBJECT = "GetCresNextObject"
 
 DEFAULT_TIMEOUT = 15.0
+
+# How long to keep the socket open after an acked UnregisterClient, waiting for
+# the device to actually drop the record.
+#
+# The ack is NOT the removal. Measured on a DM-NAX-4ZSP (3.1.0103): the ack comes
+# back in ~6ms, the record disappears from RegisteredClientList ~390ms later, and
+# closing the socket in between abandons the removal — leaving a session that can
+# never be cleaned up (the device then refuses its id as INVALID_RC_SESSION_ID).
+# Home Assistant closed the socket 3ms after the POST and stranded one session on
+# every single reload, restart and reconnect.
+#
+# Generous against the measured figure because being slow here costs a moment of
+# teardown, while being early costs a permanent slot on the device. Normally
+# returns in well under a second — this is a ceiling, not a sleep.
+REMOVAL_TIMEOUT = 5.0
+REMOVAL_POLL = 0.1
 
 
 class SubscriptionMgrError(Exception):
@@ -114,6 +141,9 @@ class SubscriptionMgrClient:
         # MsgId back in its Actions acknowledgement, so correlation is exact.
         self._pending: Dict[str, asyncio.Future] = {}
         self._on_reestablished = on_reestablished
+        # A reconnect storm delivers several CONNECTED events in a row; without
+        # this they each re-register concurrently. See reestablish().
+        self._reestablish_lock = asyncio.Lock()
         self._reader_task: Optional[asyncio.Task] = None
         self._renew_task: Optional[asyncio.Task] = None
         self._latest_state: Dict[str, Any] = {}
@@ -370,7 +400,12 @@ class SubscriptionMgrClient:
         await self._reap_stale_sessions()
 
         self._latest_state = {}
-        await self._request(ACTION_REGISTER, {"RegisteringClientIds": [self._client_id]})
+        try:
+            await self._request(
+                ACTION_REGISTER, {"RegisteringClientIds": [self._client_id]}
+            )
+        except SubscriptionMgrError as err:
+            raise SubscriptionMgrError(f"{err}{await self._registration_census()}") from err
         state = await self._await_state(
             lambda s: self._find_own_session(s) is not None
         )
@@ -393,6 +428,31 @@ class SubscriptionMgrClient:
         )
         self._start_renewal()
         return session_id
+
+    async def _registration_census(self) -> str:
+        """A suffix naming what the device is holding, for a failed registration.
+
+        A full or wedged SubscriptionMgr refuses by saying NOTHING — no negative
+        StatusId, no notification, not even the connect-time greeting — so the bare
+        timeout is indistinguishable from a device that lacks the feature. Counting
+        what it is holding is the difference between "this firmware cannot do it"
+        and "this device is out of session slots", which are opposite actions.
+
+        Returns an empty string when the count cannot be read; a diagnostic must
+        never turn one failure into two.
+        """
+        state = await self._read_state()
+        if not state:
+            return ""
+        live = dict(self._iter_live_sessions(state))
+        total = len(state.get("RegisteredClientList") or {})
+        if not total and not live:
+            return ""
+        return (
+            f" — the device is holding {total} registered session(s), "
+            f"{len(live)} on a live connection; "
+            f"orphaned sessions may have exhausted it"
+        )
 
     # -- renewal -------------------------------------------------------------
 
@@ -454,7 +514,10 @@ class SubscriptionMgrClient:
                     # The reconnect handler will re-establish; nothing to do here.
                     continue
                 try:
-                    session_id = await self.reestablish()
+                    # force: renewal exists precisely to replace a session that is
+                    # still live, so the "already live, nothing to do" skip must
+                    # not apply here.
+                    session_id = await self.reestablish(force=True)
                     logger.debug(
                         "Renewed SubscriptionMgr session (RcSessionId=%s)", session_id
                     )
@@ -474,56 +537,133 @@ class SubscriptionMgrClient:
         except asyncio.CancelledError:
             pass
 
-    async def _reap_stale_sessions(self) -> None:
-        """Unregister leftover sessions that carry OUR client id.
+    async def _await_session_removed(self, session_id: str) -> bool:
+        """Hold the socket open until the device has really dropped ``session_id``.
 
-        A session whose socket died without a clean unregister is never removed by
-        us — teardown had nothing to send on. Since we re-register on every
-        reconnect and every HA restart, those corpses accumulate under the same
-        ``RegisteredClientId``, and the device caps sessions per connection
-        (``MaxRcSessionsPerWsConnections``, 30 on a DM-NAX-4ZSP). Left alone, a few
-        dozen reloads exhaust the slots and registration starts failing for a
-        reason that looks nothing like its cause.
+        Unregistering is TWO events, and only the first is observable from the
+        request: the ack (~6ms) says the device accepted it, and the record
+        actually leaves ``RegisteredClientList`` some ~390ms later. Close the
+        socket in between and the removal never lands — and the session becomes
+        permanently unremovable, since the device subsequently refuses its id as
+        ``INVALID_RC_SESSION_ID``.
 
-        Only sessions matching our own client id are touched — other clients'
-        registrations are none of our business. Runs BEFORE registering, so it can
-        never reap the session we are about to depend on.
+        That is not a hypothetical: Home Assistant closed the socket 3ms after
+        posting the unregister, so every reload stranded exactly one session,
+        while the log showed a clean successful teardown.
+
+        Returns True once it is gone, False on timeout — the caller carries on
+        either way, because a slow removal is still better than a held-open socket.
         """
+        deadline = asyncio.get_running_loop().time() + REMOVAL_TIMEOUT
+        while asyncio.get_running_loop().time() < deadline:
+            state = await self._read_state()
+            if not state:
+                # Cannot see the registry (teardown, device blip); nothing to be
+                # gained by spinning on a read that is not answering.
+                return False
+            if session_id not in (state.get("RegisteredClientList") or {}):
+                return True
+            await asyncio.sleep(REMOVAL_POLL)
+        logger.debug(
+            "Session %s still listed %.0fs after an acked unregister; "
+            "it may be stranded on the device",
+            session_id,
+            REMOVAL_TIMEOUT,
+        )
+        return False
+
+    async def _read_state(self) -> Dict[str, Any]:
+        """The device's SubscriptionMgr object over HTTP, or ``{}``."""
         try:
             resp = await self._client.http_get("/Device/SubscriptionMgr")
-        except Exception as err:  # noqa: BLE001 - cleanup is best-effort
-            logger.debug("Could not read SubscriptionMgr state to reap sessions: %s", err)
-            return
-        state = (
+        except Exception as err:  # noqa: BLE001 - every caller is best-effort
+            logger.debug("Could not read SubscriptionMgr state: %s", err)
+            return {}
+        return (
             ((resp or {}).get("content") or resp or {})
             .get("Device", {})
             .get("SubscriptionMgr", {})
         )
 
-        stale = [
+    async def _reap_stale_sessions(self) -> None:
+        """Release any live session of ours, and report ones nothing can reach.
+
+        **An orphaned session cannot be cleaned up. There is no verb for it.**
+        Measured on a DM-NAX-4ZSP (3.1.0103): ``UnregisterClient`` against a
+        session with no live socket is refused with ``StatusId: -4
+        INVALID_RC_SESSION_ID``, one at a time or batched, while the identical
+        call against a live session of our own returns ``StatusId: 0`` and removes
+        it. Those records also survive a device reboot. So a session abandoned
+        without a clean unregister is on that device permanently, and cleaning up
+        afterwards — which an earlier version of this method tried to do — is not
+        a thing the API offers. Only :meth:`_release_previous_session` helps, by
+        never creating one.
+
+        **Two containers, and the difference is why this looked fixable.**
+        ``WsConnectionsList`` holds only sessions on a LIVE socket and is the one
+        place ``RegisteredClientId`` appears; the top-level
+        ``RegisteredClientList`` is the SUBSCRIPTION registry — every session that
+        has subscribed to anything, live or dead, with no owner attribution at all.
+        A session appears there on ``subscribe``, not on ``register``.
+
+        What remains worth doing here: unregister a LIVE session still carrying our
+        own client id (valid, and it stops us stacking a second one), and count the
+        unreachable ones so a device filling up says so in the log rather than
+        failing later for a reason that looks nothing like its cause.
+
+        Runs BEFORE registering, so it can never touch the session we are about to
+        depend on.
+        """
+        state = await self._read_state()
+        if not state:
+            return
+
+        live: Dict[str, Dict[str, Any]] = dict(self._iter_live_sessions(state))
+        ours = [
             sid
-            for sid, entry in self._iter_sessions(state)
+            for sid, entry in live.items()
             if entry.get("RegisteredClientId") == self._client_id
         ]
-        if not stale:
+        orphans = [
+            sid for sid in (state.get("RegisteredClientList") or {}) if sid not in live
+        ]
+        if orphans:
+            # INFO, not WARNING: these are inert. Measured on a DM-NAX-4ZSP with 14
+            # of them present, a single connection still registered the full
+            # documented 30 live sessions and failed the 31st with
+            # EXCEEDED_RC_SESSIONS — so they occupy the subscription registry
+            # without consuming the session budget, and nothing needs doing about
+            # them. Worth stating anyway: the count is a running tally of
+            # ungraceful shutdowns, and it is the first place to look if
+            # registration ever starts failing.
+            logger.info(
+                "%d SubscriptionMgr session(s) on this device are registered with "
+                "no live connection. They cannot be unregistered (the device "
+                "refuses them as INVALID_RC_SESSION_ID) and survive a reboot, but "
+                "they do not consume the live session cap",
+                len(orphans),
+            )
+        if not ours:
             return
 
         logger.info(
-            "Reaping %d stale SubscriptionMgr session(s) for %s: %s",
-            len(stale),
+            "Releasing %d live SubscriptionMgr session(s) still held by %s",
+            len(ours),
             self._client_id,
-            ", ".join(stale),
         )
         try:
             # RcSessionId is an array here, so the whole batch goes in one call.
-            await self._request(ACTION_UNREGISTER, {"RcSessionId": stale})
+            await self._request(ACTION_UNREGISTER, {"RcSessionId": ours})
         except SubscriptionMgrError as err:
             # Cosmetic cleanup — never fail a working registration over it.
-            logger.debug("Could not reap stale sessions: %s", err)
+            logger.debug("Could not release our previous live session(s): %s", err)
 
     @staticmethod
-    def _iter_sessions(state: Dict[str, Any]):
-        """Yield ``(session_id, entry)`` for every registration in a state blob."""
+    def _iter_live_sessions(state: Dict[str, Any]):
+        """Yield ``(session_id, entry)`` for every session on a LIVE connection.
+
+        Only these carry ``RegisteredClientId``; see :meth:`_reap_stale_sessions`.
+        """
         for ws_entry in (state.get("WsConnectionsList") or {}).values():
             if not isinstance(ws_entry, dict):
                 continue
@@ -536,9 +676,11 @@ class SubscriptionMgrClient:
 
         Sessions are nested per WebSocket connection and other clients may be
         registered alongside us, so match on our own RegisteredClientId rather than
-        taking whatever is first.
+        taking whatever is first. The one we have just registered is by definition
+        live, so the flat top-level list is not consulted here — it names no owner
+        and could only guess.
         """
-        for sid, entry in self._iter_sessions(state):
+        for sid, entry in self._iter_live_sessions(state):
             if entry.get("RegisteredClientId") == self._client_id:
                 return sid
         return None
@@ -617,6 +759,9 @@ class SubscriptionMgrClient:
         session_id = self._rc_session_id
         try:
             await self._request(ACTION_UNREGISTER, {"RcSessionId": [session_id]})
+            # The ack is not the removal — see _await_session_removed. Closing
+            # here, as this method's caller is about to, would strand the session.
+            await self._await_session_removed(session_id)
         except SubscriptionMgrError as err:
             # Teardown runs on the way down, often against a socket already going
             # away; failing here would mask the real reason we are closing.
@@ -626,17 +771,91 @@ class SubscriptionMgrClient:
             self._subscribed_paths.clear()
             self._desired_paths.clear()
 
-    async def reestablish(self) -> Optional[str]:
-        """Re-register and re-subscribe after a reconnect.
+    async def reestablish(self, force: bool = False) -> Optional[str]:
+        """Re-register and re-subscribe after a reconnect or a renewal.
 
         A registration is scoped to its WebSocket connection, so a reconnect leaves
         the old session on a socket that no longer exists. Paths are remembered
         locally to be replayed here.
+
+        **Serialised, and a reconnect will not redo another's work.** A device
+        coming back delivers a burst of CONNECTED events, and each one used to
+        start its own re-registration: they interleaved, each releasing only the
+        id it had captured, and the device was left holding TWO live sessions for
+        one client. Seen on a DM-NAX-4ZSP straight after a power cycle. Two live
+        sessions are not fatal — the reap in :meth:`register` collects our own on
+        the next pass — but each is one more thing to strand if the process is
+        killed, so it is worth not creating.
+
+        ``force`` is the renewal's escape hatch: renewing is *deliberately*
+        replacing a session that is still perfectly live, which is exactly what the
+        skip below would otherwise suppress.
         """
-        paths = list(self._desired_paths)
+        async with self._reestablish_lock:
+            if not force and self._rc_session_id:
+                if await self._session_is_live(self._rc_session_id):
+                    logger.debug(
+                        "Session %s is already live; skipping re-registration",
+                        self._rc_session_id,
+                    )
+                    return self._rc_session_id
+            paths = list(self._desired_paths)
+            await self._release_previous_session()
+            session_id = await self.register()
+            if paths:
+                await self.subscribe(paths)
+            return session_id
+
+    async def _session_is_live(self, session_id: str) -> bool:
+        """Whether the device currently lists ``session_id`` on a live connection."""
+        state = await self._read_state()
+        if not state:
+            # Unreadable is not evidence of absence, but re-registering is the
+            # safe direction: a spare session is recoverable, a missing one is
+            # silence on the feed.
+            return False
+        return any(sid == session_id for sid, _ in self._iter_live_sessions(state))
+
+    async def _release_previous_session(self) -> None:
+        """Hand the old session back before taking a new one.
+
+        A session is scoped to its socket, but the device does NOT drop the record
+        when that socket goes away. Measured on a DM-NAX-4ZSP (3.1.0103): sessions
+        from dead connections sit in ``RegisteredClientList`` indefinitely, well
+        past ``ExpirationDurInSecs``, with ``WsConnectionsList`` empty beside them.
+
+        So abandoning the id leaks a session every time — and renewal alone
+        re-registers every ten minutes. Once the device has accumulated enough it
+        stops acknowledging ``RegisterClient`` at all: no error, no negative
+        StatusId, no greeting on the socket, just silence. Oak Forest reached that
+        state with 11 orphans, which took browsing and all externally-started
+        playback telemetry down with it and read as a firmware fault.
+
+        This is the ONLY thing that helps, so it is worth doing even though it is
+        best-effort. On the reconnect path the old socket is already gone and the
+        device refuses the id as ``INVALID_RC_SESSION_ID`` — nothing can be done
+        about those. On the RENEWAL path, which is the frequent one at every
+        ``ExpirationDurInSecs``/2, the socket is still up and this genuinely
+        removes the record. See :meth:`_reap_stale_sessions` for why there is no
+        cleaning up after the fact.
+        """
+        session_id = self._rc_session_id
+        # Dropped locally either way: whatever the device does with the request,
+        # this client is finished with that session.
         self._rc_session_id = None
         self._subscribed_paths.clear()
-        session_id = await self.register()
-        if paths:
-            await self.subscribe(paths)
-        return session_id
+        if session_id is None:
+            return
+        try:
+            await self._request(ACTION_UNREGISTER, {"RcSessionId": [session_id]})
+            # Registering again immediately would not itself close the socket, but
+            # the removal must land before anything counts sessions — and this is
+            # the one path where waiting is nearly free.
+            gone = await self._await_session_removed(session_id)
+            logger.debug(
+                "Released previous SubscriptionMgr session %s (removed=%s)",
+                session_id,
+                gone,
+            )
+        except SubscriptionMgrError as err:
+            logger.debug("Could not release previous session %s: %s", session_id, err)
