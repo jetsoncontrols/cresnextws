@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 # importing subscription_mgr at module scope.
 SUBSCRIPTION_MGR_OBJECT = "/Device/SubscriptionMgr"
 
+class CresNextRequestError(Exception):
+    """A RequestAction on the primary socket was not acknowledged, or failed.
+
+    Deliberately distinct from ``SubscriptionMgrError``: that one means the
+    device's subscription endpoint is unhappy, which is a transport-wide
+    problem, whereas this means one command did not land.
+    """
+
+
 # Global counter for unique subscription IDs
 _subscription_counter = 0
 
@@ -74,6 +83,13 @@ class DataEventManager:
         self._monitor_task: Optional[asyncio.Task] = None
         self._running = False
         self._was_monitoring_before_disconnect = False
+        # In-flight async_request() calls, keyed by the MsgId each one put in its
+        # envelope. The device echoes MsgId back in an `Actions` acknowledgement
+        # on this same socket, so correlation is exact. Same mechanism the
+        # SubscriptionMgr client uses on its own socket — lifted here because a
+        # fire-and-forget ws_post cannot tell "the device did it" from "the
+        # device silently ignored it".
+        self._pending: Dict[str, asyncio.Future] = {}
         # Opt-in: only set when a caller enables device-side registration for the
         # few objects that require it (see subscription_mgr). Stays None otherwise,
         # so devices without a SubscriptionMgr are entirely unaffected.
@@ -98,6 +114,10 @@ class DataEventManager:
         logger.debug(f"Connection status changed to: {status.value}")
 
         if status == ConnectionStatus.DISCONNECTED:
+            # The device answers on the socket that just went away, so nothing
+            # in flight can ever be acknowledged. Fail them now rather than
+            # leaving each caller to discover it at its own timeout.
+            self._fail_pending("WebSocket disconnected before acknowledgement")
             # Remember if we were monitoring before disconnect so we can restart when reconnected
             self._was_monitoring_before_disconnect = self._running
             if self._running:
@@ -420,6 +440,85 @@ class DataEventManager:
 
         return paths
 
+    def _resolve_ack(self, message: Dict[str, Any]) -> bool:
+        """Hand an ``Actions`` acknowledgement to whoever is waiting on its MsgId.
+
+        Returns True if it resolved at least one waiter. A message with no
+        ``Actions``, or one whose MsgId nobody is waiting on (anything sent with
+        a plain ``ws_post``, or a late ack whose caller already timed out), is
+        simply ignored.
+        """
+        actions = message.get("Actions")
+        if not isinstance(actions, list):
+            return False
+        resolved = False
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            future = self._pending.get(str(action.get("MsgId", "")))
+            if future is not None and not future.done():
+                future.set_result(action)
+                resolved = True
+        return resolved
+
+    async def async_request(
+        self,
+        payload: Dict[str, Any],
+        msg_id: str,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Send a RequestAction on the primary socket and await its ack.
+
+        The counterpart to ``client.ws_post``, which returns as soon as the bytes
+        are away and so reports success for a command the device never acted on.
+
+        ``msg_id`` is supplied rather than generated because the envelope differs
+        per subsystem (``MediaPlayerNeXt`` uses ``ActionId``/``ActionIdOptions``,
+        ``SubscriptionMgr`` uses ``RegistrationAction``/…), so the caller builds
+        the payload and only tells us which MsgId to watch for. Crestron's API
+        reference calls for a UUIDv1 by name.
+
+        Raises ``CresNextRequestError`` on timeout or on a negative ``StatusId``.
+        Returns the ack, whose ``Results`` carry the per-request status.
+        """
+        if not self.client.connected:
+            raise CresNextRequestError("WebSocket is not connected")
+
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending[msg_id] = future
+        try:
+            await self.client.ws_post(payload=payload)
+            ack = await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError as err:
+            raise CresNextRequestError(
+                f"No acknowledgement within {timeout}s for MsgId {msg_id}"
+            ) from err
+        finally:
+            self._pending.pop(msg_id, None)
+
+        for result in ack.get("Results", []):
+            if not isinstance(result, dict):
+                continue
+            status = result.get("StatusId")
+            if isinstance(status, int) and status < 0:
+                raise CresNextRequestError(
+                    f"Request failed: StatusId={status} "
+                    f"{result.get('StatusInfo', '')}".strip()
+                )
+        return ack
+
+    def _fail_pending(self, reason: str) -> None:
+        """Fail every in-flight request. Called when the socket goes away.
+
+        Without this a caller waiting on an ack sits until its own timeout after
+        a disconnect, and the reply it is waiting for can never arrive — the
+        device answers on a socket that no longer exists.
+        """
+        for msg_id, future in list(self._pending.items()):
+            if not future.done():
+                future.set_exception(CresNextRequestError(reason))
+            self._pending.pop(msg_id, None)
+
     def _process_message(self, message: Dict[str, Any]) -> None:
         """
         Process an incoming WebSocket message and trigger matching callbacks.
@@ -429,6 +528,12 @@ class DataEventManager:
         """
         try:
             logger.debug(f"Processing message: {message}")
+
+            # Acknowledgements first: they carry no device path, so the path
+            # walk below would only report "no paths could be extracted" and
+            # drop them. Not an early return — a message may legitimately carry
+            # both an ack and state, and the ack must not swallow the state.
+            self._resolve_ack(message)
 
             # Handle messages with explicit path/data keys (both lowercase and uppercase)
             explicit_path = message.get("path") or message.get("Path")
