@@ -158,6 +158,12 @@ class SubscriptionMgrClient:
         # A reconnect storm delivers several CONNECTED events in a row; without
         # this they each re-register concurrently. See reestablish().
         self._reestablish_lock = asyncio.Lock()
+        # Which SOCKET a session belongs to. A registration is scoped to the
+        # connection that created it, so "is this session still ours?" is a
+        # question about identity, not about what the device currently lists —
+        # see reestablish() for why asking the device gets it wrong.
+        self._connection_generation = 0
+        self._session_generation: Optional[int] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._renew_task: Optional[asyncio.Task] = None
         self._latest_state: Dict[str, Any] = {}
@@ -252,6 +258,10 @@ class SubscriptionMgrClient:
         """Re-register after a reconnect, since the old session died with the socket."""
         if status is not ConnectionStatus.CONNECTED:
             return
+        # A new socket, so anything registered against the previous one is dead.
+        # Bumped BEFORE the early return below: the count must track sockets, not
+        # the subset of them we happened to act on.
+        self._connection_generation += 1
         # Only meaningful once we HAVE a session; on the first connect there is
         # nothing to restore and register() is about to run anyway.
         if self._rc_session_id is None:
@@ -263,8 +273,18 @@ class SubscriptionMgrClient:
 
     async def _reestablish_safe(self) -> None:
         """Best-effort re-register; a failure must not escape into the client."""
+        previous = self._rc_session_id
         try:
             session_id = await self.reestablish()
+            if session_id == previous:
+                # Say what happened. This line used to claim a re-registration
+                # unconditionally, so the log read as a clean recovery while
+                # handing back a session that had died with the old socket.
+                logger.debug(
+                    "Reconnect handled by another task; session %s already current",
+                    session_id,
+                )
+                return
             logger.info(
                 "Re-registered with SubscriptionMgr after reconnect (RcSessionId=%s)",
                 session_id,
@@ -431,6 +451,7 @@ class SubscriptionMgrClient:
                 f"{self._client_id!r} in: {state}"
             )
         self._rc_session_id = session_id
+        self._session_generation = self._connection_generation
         expiry = state.get("ExpirationDurInSecs")
         if isinstance(expiry, int) and expiry > 0:
             self._expiration_secs = expiry
@@ -852,6 +873,7 @@ class SubscriptionMgrClient:
             logger.debug("Unregister of %s did not confirm: %s", session_id, err)
         finally:
             self._rc_session_id = None
+            self._session_generation = None
             self._subscribed_paths.clear()
             self._desired_paths.clear()
 
@@ -871,37 +893,60 @@ class SubscriptionMgrClient:
         the next pass — but each is one more thing to strand if the process is
         killed, so it is worth not creating.
 
+        **The skip is decided by which SOCKET the session belongs to, not by
+        asking the device.** It used to read ``WsConnectionsList`` over HTTP and
+        look for the id there — and that read is racy in exactly the situation
+        it was there to handle. The device's copy lags the socket by
+        a few hundred milliseconds (the same persistent-store lag documented at
+        ``REMOVAL_TIMEOUT``), while this runs within ~30ms of the new socket
+        opening. So a reconnect read the entry for the socket that had JUST
+        died, called the dead session live, and skipped the re-registration.
+
+        Measured at Oak Forest across a DM-NAX-4ZSP firmware update: both
+        reconnects (15:30:23 and 15:44:02) logged "Re-registered after reconnect"
+        while RETURNING THE PREVIOUS SESSION ID, and the feed then stayed silent
+        until the renewal keepalive proved the session dead — 4m25s and 46s
+        later. Worse than the silence, each cycle left another live session on
+        the device (``Releasing 2 live SubscriptionMgr session(s)``), and every
+        one of those is a permanent orphan if the process dies first.
+
+        A generation counter cannot race: the session either was registered on
+        the socket we are holding now, or it was not.
+
         ``force`` is the renewal's escape hatch: renewing is *deliberately*
         replacing a session that is still perfectly live, which is exactly what the
         skip below would otherwise suppress.
         """
         async with self._reestablish_lock:
-            if not force and self._rc_session_id:
-                if await self._session_is_live(self._rc_session_id):
-                    logger.debug(
-                        "Session %s is already live; skipping re-registration",
-                        self._rc_session_id,
-                    )
-                    return self._rc_session_id
+            stale = self._session_generation != self._connection_generation
+            if not force and self._rc_session_id and not stale:
+                # Same socket that registered it, so it is still ours by
+                # construction — this is the duplicate-CONNECTED case the lock
+                # above exists for, not a real reconnect.
+                logger.debug(
+                    "Session %s belongs to the current connection; "
+                    "skipping re-registration",
+                    self._rc_session_id,
+                )
+                return self._rc_session_id
             paths = list(self._desired_paths)
-            await self._release_previous_session()
+            # On a genuine reconnect the old socket is already gone, so the
+            # device will refuse UnregisterClient for it. Don't spend a
+            # round-trip proving that; register() reaps anything still live.
+            await self._release_previous_session(known_dead=stale)
             session_id = await self.register()
             if paths:
                 await self.subscribe(paths)
             return session_id
 
-    async def _session_is_live(self, session_id: str) -> bool:
-        """Whether the device currently lists ``session_id`` on a live connection."""
-        state = await self._read_state()
-        if not state:
-            # Unreadable is not evidence of absence, but re-registering is the
-            # safe direction: a spare session is recoverable, a missing one is
-            # silence on the feed.
-            return False
-        return any(sid == session_id for sid, _ in self._iter_live_sessions(state))
-
-    async def _release_previous_session(self) -> None:
+    async def _release_previous_session(self, known_dead: bool = False) -> None:
         """Hand the old session back before taking a new one.
+
+        ``known_dead`` says the socket that owned the session has already been
+        replaced, so ``UnregisterClient`` is certain to be refused with
+        ``INVALID_RC_SESSION_ID``. Drop the id locally and skip the request —
+        the outcome is identical and it saves a doomed round-trip on every
+        reconnect.
 
         A session is scoped to its socket, but the device does NOT drop the record
         when that socket goes away. Measured on a DM-NAX-4ZSP (3.1.0103): sessions
@@ -927,8 +972,16 @@ class SubscriptionMgrClient:
         # Dropped locally either way: whatever the device does with the request,
         # this client is finished with that session.
         self._rc_session_id = None
+        self._session_generation = None
         self._subscribed_paths.clear()
         if session_id is None:
+            return
+        if known_dead:
+            logger.debug(
+                "Previous SubscriptionMgr session %s died with its socket; "
+                "not attempting UnregisterClient",
+                session_id,
+            )
             return
         try:
             await self._request(ACTION_UNREGISTER, {"RcSessionId": [session_id]})
