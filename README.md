@@ -501,18 +501,28 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is automatically published to PyPI using GitHub Actions. The publishing workflow is triggered by:
 
-### For Development Releases (Test PyPI)
-- **Pushes to main branch**: Automatically publishes to Test PyPI for testing
-- **Manual workflow dispatch**: Can be triggered manually with option to publish to Test PyPI
+**A push to `main` publishes NOTHING.** It builds the package, checks it, uploads
+the artifact — and the `Determine target repository` step sets `repository=none`,
+so both publish steps are skipped. The run still reports **success**, which is the
+trap: merging a version bump to `main` looks like it shipped and does not. Only a
+version tag publishes.
 
 ### For Production Releases (PyPI)
-- **Version tags**: Create and push a version tag (e.g., `v1.0.0`, `v0.2.1`) to trigger a production release to PyPI
+- **Version tags**: create and push a version tag (e.g. `v1.0.0`, `v0.2.4`) — this
+  is the ONLY trigger that publishes to PyPI. It also creates the GitHub Release.
+- Confirm it landed rather than trusting the green check:
+  `curl -s https://pypi.org/pypi/cresnextws/json | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['version'])"`
+
+### For Test PyPI
+- **Manual workflow dispatch** with `publish_to_testpypi: true`. That input is the
+  only path to Test PyPI; a branch push does not reach it.
+- A manual dispatch with `publish_to_testpypi: false` publishes to real PyPI.
 
 ### Setting up PyPI Credentials
 
 To enable automatic publishing, you need to configure the following secrets in your GitHub repository:
 
-1. **For Test PyPI publishing** (pushes to main branch):
+1. **For Test PyPI publishing** (manual workflow dispatch):
    - Go to [Test PyPI](https://test.pypi.org/manage/account/), create an API token
    - Add the token as `TEST_PYPI_API_TOKEN` in GitHub repository secrets
 
