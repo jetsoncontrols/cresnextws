@@ -8,6 +8,7 @@ with Crestron CresNext WebSocket API.
 import asyncio
 import json
 import logging
+import time
 from typing import Optional, Dict, Any, Type, Callable, List
 from enum import Enum
 
@@ -21,6 +22,16 @@ from yarl import URL
 
 
 logger = logging.getLogger(__name__)
+
+#: Failures that mean "the device is not reachable", as distinct from "the device
+#: answered and rejected us". aiohttp models the first as ClientConnectionError
+#: (ClientOSError, ServerDisconnectedError and the connect/read timeouts are all
+#: subclasses); OSError catches the socket layer underneath it.
+#:
+#: Keeping the two apart is not cosmetic. A closed port during a reboot used to
+#: surface as "Authentication error: Cannot connect to host ...", which reads as
+#: a credential fault and is the wrong thing to go and check.
+TRANSPORT_ERRORS = (aiohttp.ClientConnectionError, asyncio.TimeoutError, OSError)
 
 
 class ConnectionStatus(Enum):
@@ -52,8 +63,20 @@ class ClientConfig:
             (default: "/websockify")
         reconnect_delay (float): Initial delay in seconds before reconnection attempt
             (default: 0.1)
-        max_reconnect_delay (float): Maximum delay in seconds for exponential backoff
-            (default: 5.0)
+        max_reconnect_delay (float): Ceiling in seconds for the exponential backoff
+            (default: 60.0). The doubling still gets the first ten attempts in
+            under three seconds, so a device that reboots quickly is caught
+            almost immediately; the ceiling only governs what a LONG outage
+            costs. It used to be 5.0, which meant a device that stayed down
+            retried roughly twelve times a minute forever — a 47-minute NAX
+            firmware update produced ~4,150 log lines from a single site.
+        logout_timeout (float): Timeout in seconds for the courtesy logout issued
+            before authenticating (default: 5.0). Its failure is never fatal.
+        failure_log_attempts (int): How many consecutive connection failures are
+            logged at full volume before repeats drop to DEBUG (default: 3)
+        failure_log_interval (float): Once quietened, how often in seconds to
+            still emit one "still unreachable" summary so a permanently down
+            device does not vanish from the log entirely (default: 600.0)
         health_check_interval (float): Interval in seconds for connection health checks
             to detect stale connections (default: 5.0)
         health_check_timeout (float): Timeout in seconds for health check responses
@@ -75,7 +98,10 @@ class ClientConfig:
     logout_path: str = "/logout"  # REST logout path
     websocket_path: str = "/websockify"  # WebSocket path
     reconnect_delay: float = 0.1  # Initial reconnect delay
-    max_reconnect_delay: float = 5.0  # Maximum reconnect delay for exponential backoff
+    max_reconnect_delay: float = 60.0  # Ceiling for the exponential backoff
+    logout_timeout: float = 5.0  # Courtesy pre-auth logout; never fatal
+    failure_log_attempts: int = 3  # Failures logged at full volume before quietening
+    failure_log_interval: float = 600.0  # Then one summary line this often
     health_check_interval: float = 5.0  # Health check every 5 seconds
     health_check_timeout: float = 2.0  # Health check timeout
     health_check_path: Optional[str] = None  # Optional WebSocket path for health check validation
@@ -106,6 +132,16 @@ class CresNextWSClient:
         self._reconnect_task = None
         self._http_session = None
         self._is_first_reconnect_attempt = True
+
+        # Outage accounting, so a device that is simply switched off costs a
+        # handful of log lines instead of thousands. See _log_connect_failure().
+        self._consecutive_failures = 0
+        self._outage_started_at: Optional[float] = None
+        self._last_failure_log = 0.0
+        # Set by _authenticate() when the failure was the device being
+        # unreachable rather than a credential problem. They are different
+        # faults and must read differently in the log.
+        self._last_failure_transport: Optional[str] = None
 
         # Background tasks and message queue
         self._recv_task = None
@@ -188,6 +224,90 @@ class CresNextWSClient:
                 except Exception as e:
                     logger.error(f"Error in connection status handler: {e}")
 
+    # -- outage accounting ---------------------------------------------------
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Compact human duration for log lines: 47s, 3m12s, 1h04m."""
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds}s"
+        if seconds < 3600:
+            return f"{seconds // 60}m{seconds % 60:02d}s"
+        return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+    def _log_connect_failure(self, detail: Optional[str] = None) -> None:
+        """Record a failed connection attempt and log it, without flooding.
+
+        The first ``failure_log_attempts`` failures speak at full volume — that
+        is the window in which somebody is likely watching, and a transient
+        blip should still be visible. After that the per-attempt lines drop to
+        DEBUG and one summary is emitted every ``failure_log_interval``, so a
+        device that stays down remains VISIBLE without being LOUD.
+
+        Silence would be the wrong fix: an integration that stops mentioning an
+        unreachable device looks healthy right up until somebody asks why the
+        entities are stale.
+        """
+        now = time.monotonic()
+        if self._consecutive_failures == 0:
+            self._outage_started_at = now
+            self._last_failure_log = now
+        self._consecutive_failures += 1
+
+        if detail is None:
+            reason = self._last_failure_transport
+            detail = (
+                f"cannot reach {self.config.host}: {reason}"
+                if reason is not None
+                else f"authentication rejected by {self.config.host}"
+            )
+
+        if self._consecutive_failures <= self.config.failure_log_attempts:
+            self._last_failure_log = now
+            logger.warning(
+                "Connection attempt %d failed — %s",
+                self._consecutive_failures,
+                detail,
+            )
+            if self._consecutive_failures == self.config.failure_log_attempts:
+                logger.info(
+                    "Further connection failures for %s will be logged every %s "
+                    "until it comes back",
+                    self.config.host,
+                    self._format_duration(self.config.failure_log_interval),
+                )
+            return
+
+        logger.debug("Connection attempt %d failed — %s", self._consecutive_failures, detail)
+        if now - self._last_failure_log >= self.config.failure_log_interval:
+            self._last_failure_log = now
+            logger.info(
+                "%s still unreachable after %d attempts (%s) — still retrying",
+                self.config.host,
+                self._consecutive_failures,
+                self._format_duration(self._outage_elapsed(now)),
+            )
+
+    def _outage_elapsed(self, now: float) -> float:
+        """Seconds since the outage began. Explicit None check — a monotonic
+        clock reading exactly 0.0 is falsy, and `or` silently reported 0s."""
+        started = self._outage_started_at
+        return now - started if started is not None else 0.0
+
+    def _log_connect_recovery(self) -> None:
+        """Close out an outage, so the log says how long it actually lasted."""
+        if self._consecutive_failures:
+            logger.info(
+                "Reconnected to %s after %d failed attempt(s) over %s",
+                self.config.host,
+                self._consecutive_failures,
+                self._format_duration(self._outage_elapsed(time.monotonic())),
+            )
+        self._consecutive_failures = 0
+        self._outage_started_at = None
+        self._last_failure_transport = None
+
     def get_base_endpoint(self) -> str:
         """
         Return the base URL for the configured host.
@@ -248,9 +368,23 @@ class CresNextWSClient:
         Returns:
             Optional[str]: Authentication token (CREST-XSRF-TOKEN) if successful, None otherwise
         """
+        # Hand back any session this client still holds before asking for a new
+        # one. It is a COURTESY to the device, not a precondition, so it gets its
+        # own guard: it used to sit inside the main try block, where a logout
+        # that merely timed out aborted the authentication that followed and
+        # turned a reachable device into a failed connection attempt.
+        if self._http_session:
+            try:
+                async with self._http_session.get(
+                    self._get_logout_endpoint(),
+                    timeout=aiohttp.ClientTimeout(total=self.config.logout_timeout),
+                ):
+                    pass
+            except Exception as e:  # noqa: BLE001 - never fatal
+                logger.debug(f"Pre-auth logout failed (continuing): {e}")
+
+        self._last_failure_transport = None
         try:
-            if self._http_session:
-                await self._http_session.get(self._get_logout_endpoint())
             if not self._http_session:
                 # Create SSL context in executor to avoid blocking
                 loop = asyncio.get_event_loop()
@@ -293,6 +427,13 @@ class CresNextWSClient:
                 logger.warning(f"Authentication failed with status {response.status}")
                 return None
 
+        except TRANSPORT_ERRORS as e:
+            # The device did not answer. Not an authentication problem — recorded
+            # for the caller to report as unreachability, and left to the outage
+            # accounting to log at a sane volume.
+            self._last_failure_transport = str(e) or e.__class__.__name__
+            logger.debug(f"Transport failure reaching {self.config.host}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Authentication error: {e}")
             return None
@@ -317,7 +458,14 @@ class CresNextWSClient:
         if self._current_status not in (ConnectionStatus.RECONNECTING_FIRST, ConnectionStatus.RECONNECTING):
             self._notify_status_change(ConnectionStatus.CONNECTING)
 
-        logger.info(f"Connecting to CresNext WS API at {self.config.host}")
+        # Only the first attempt of an outage announces itself; the rest are
+        # accounted for by _log_connect_failure() and would otherwise be one
+        # more line per retry, forever.
+        logger.log(
+            logging.INFO if self._consecutive_failures == 0 else logging.DEBUG,
+            "Connecting to CresNext WS API at %s",
+            self.config.host,
+        )
 
         try:
             # Authenticate and get token if credentials provided in config
@@ -325,7 +473,7 @@ class CresNextWSClient:
 
             # If authentication failed, don't proceed to open the WebSocket
             if auth_token is None or self._http_session is None:
-                logger.error("Authentication failed; aborting connection")
+                self._log_connect_failure()
                 self._connected = False
                 # Only emit DISCONNECTED if we're not in a reconnection state
                 if self._current_status not in (ConnectionStatus.RECONNECTING_FIRST, ConnectionStatus.RECONNECTING):
@@ -384,12 +532,17 @@ class CresNextWSClient:
             # Start health check task to detect stale connections (e.g., after system sleep)
             self._health_check_task = asyncio.create_task(self._health_check_loop())
 
+            self._log_connect_recovery()
             logger.info("WebSocket connection established")
             self._notify_status_change(ConnectionStatus.CONNECTED)
             return True
 
         except Exception as e:
-            logger.error(f"Connection failed: {e}")
+            # Authentication got through but the socket stage did not, which is a
+            # third thing again — say so rather than borrowing either wording.
+            self._log_connect_failure(
+                f"WebSocket connection to {self.config.host} failed: {e}"
+            )
             self._connected = False
             # Only emit DISCONNECTED if we're not in a reconnection state
             if self._current_status not in (ConnectionStatus.RECONNECTING_FIRST, ConnectionStatus.RECONNECTING):
@@ -439,7 +592,10 @@ class CresNextWSClient:
         
         while self.config.auto_reconnect and not self._connected:
             try:
-                logger.info(
+                # DEBUG, not INFO: connect() already reports the outage, and this
+                # line fires once per attempt — 821 of them during one NAX
+                # firmware update, saying nothing that the failure line did not.
+                logger.debug(
                     f"Attempting reconnection in {current_delay:.1f} seconds..."
                 )
                 await asyncio.sleep(current_delay)
@@ -450,10 +606,12 @@ class CresNextWSClient:
                 # Attempt to reconnect
                 success = await self.connect()
                 if success:
-                    logger.info("Reconnection successful")
+                    logger.debug("Reconnection successful")
                     break
                 else:
-                    logger.warning("Reconnection failed, will retry...")
+                    # connect() has already accounted for and logged the failure
+                    # at whatever volume is currently warranted.
+                    logger.debug("Reconnection failed, will retry...")
                     # If this was the first reconnect attempt and it failed,
                     # switch to RECONNECTING status for subsequent attempts
                     if self._is_first_reconnect_attempt:
