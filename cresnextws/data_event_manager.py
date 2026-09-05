@@ -270,6 +270,33 @@ class DataEventManager:
             session_id = await mgr.register()
             await mgr.subscribe(paths)
         except Exception:
+            # DID IT ACTUALLY FAIL? The client reconnects and re-registers ON
+            # ITS OWN, in a task this call knows nothing about (see
+            # `_reestablish_safe`). If the socket dropped while we were waiting,
+            # the ack we wanted died with it and this raises a timeout — while
+            # the reconnect that followed quietly registered a NEW session and
+            # replayed every path. Tearing the client down here then destroys a
+            # subscription that is working, and the caller is told telemetry is
+            # unavailable when it had just been restored.
+            #
+            # Measured at Oak Forest, 2026-09-05: the socket errored at
+            # 16:52:41, the re-establish registered and subscribed all 10 paths
+            # at 16:52:51, and this handler disconnected it at 16:52:54 when the
+            # original 15s wait expired. The site then ran without MP2 telemetry
+            # until someone reloaded the integration by hand.
+            #
+            # So ask the client what is true NOW rather than trusting the
+            # exception to still describe it.
+            if mgr.is_registered and mgr.connected:
+                logger.info(
+                    "SubscriptionMgr setup raised (%s) but the client "
+                    "re-established itself meanwhile — keeping session %s with "
+                    "%d path(s) rather than tearing down a live subscription",
+                    "request lost with the socket",
+                    mgr.rc_session_id,
+                    len(mgr.subscribed_paths),
+                )
+                return mgr.rc_session_id
             self._subscription_mgr = None
             await mgr.disconnect()
             raise
