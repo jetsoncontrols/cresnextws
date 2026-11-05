@@ -80,6 +80,11 @@ class DataEventManager:
         """
         self.client = client
         self._subscriptions: Dict[str, Subscription] = {}
+        # path -> the ids of the subscriptions it matches, in subscription order. Every push
+        # repeats the same paths (a DM-NAX's MP2 telemetry), and matching each against every
+        # subscription with fnmatch was 50,000 calls in a 120 s profile at Oak Forest
+        # (2026-11-05). Cleared whenever a subscription is added or removed (0.3.0).
+        self._match_cache: Dict[str, Tuple[str, ...]] = {}
         self._monitor_task: Optional[asyncio.Task] = None
         self._running = False
         self._was_monitoring_before_disconnect = False
@@ -184,6 +189,7 @@ class DataEventManager:
 
         subscription_id = subscription.subscription_id
         self._subscriptions[subscription_id] = subscription
+        self._match_cache.clear()
 
         logger.debug(
             f"Added subscription {subscription_id} for pattern: {path_pattern}"
@@ -356,6 +362,7 @@ class DataEventManager:
         """
         if subscription_id in self._subscriptions:
             subscription = self._subscriptions.pop(subscription_id)
+            self._match_cache.clear()
             logger.debug(
                 f"Removed subscription {subscription_id} for pattern: {subscription.path_pattern}"
             )
@@ -368,6 +375,7 @@ class DataEventManager:
         """Remove all subscriptions."""
         count = len(self._subscriptions)
         self._subscriptions.clear()
+        self._match_cache.clear()
         logger.debug(f"Cleared {count} subscriptions")
 
     def get_subscriptions(self) -> List[Dict[str, Any]]:
@@ -546,15 +554,40 @@ class DataEventManager:
                 future.set_exception(CresNextRequestError(reason))
             self._pending.pop(msg_id, None)
 
+    #: The path cache is dropped past this many paths (a device naming ever-new paths).
+    _MATCH_CACHE_MAX = 8192
+
+    def _matching(self, path: str) -> Tuple[str, ...]:
+        """The ids of the subscriptions `path` matches, cached per path."""
+        found = self._match_cache.get(path)
+        if found is None:
+            found = tuple(
+                sub_id
+                for sub_id, subscription in self._subscriptions.items()
+                if self._path_matches_pattern(path, subscription)
+            )
+            if len(self._match_cache) >= self._MATCH_CACHE_MAX:
+                self._match_cache.clear()
+            self._match_cache[path] = found
+        return found
+
     def _process_message(self, message: Dict[str, Any]) -> None:
         """
         Process an incoming WebSocket message and trigger matching callbacks.
 
+        A subscription that takes the FULL message (``full_message=True``) is called ONCE per
+        message, with the first path of it that matched, however many of the message's
+        paths match it (0.3.0): every call would hand it the same message, and a callback
+        that merges it with a list-appending merger duplicated list items. A per-path
+        subscription is still called once per matching path, with that path's data.
+
         Args:
             message (Dict[str, Any]): The message received from the WebSocket
         """
+        debug = logger.isEnabledFor(logging.DEBUG)
         try:
-            logger.debug(f"Processing message: {message}")
+            if debug:
+                logger.debug("Processing message: %s", message)
 
             # Acknowledgements first: they carry no device path, so the path
             # walk below would only report "no paths could be extracted" and
@@ -575,30 +608,39 @@ class DataEventManager:
                 paths_and_data = self._extract_paths_from_nested_data(message)
 
             if not paths_and_data:
-                logger.debug(f"No paths could be extracted from message: {message}")
+                if debug:
+                    logger.debug("No paths could be extracted from message: %s", message)
                 return
 
             total_matches = 0
+            full_done: set = set()
 
             # Process each extracted path
             for path, data in paths_and_data:
                 # Ensure path is a string
                 if not isinstance(path, str):
-                    logger.debug(f"Skipping non-string path: {path}")
+                    if debug:
+                        logger.debug("Skipping non-string path: %s", path)
                     continue
 
-                # Find matching subscriptions for this path
-                matched_subscriptions = []
-                for sub_id, subscription in self._subscriptions.items():
-                    if self._path_matches_pattern(path, subscription):
-                        matched_subscriptions.append((sub_id, subscription))
-
-                # Trigger callbacks for matching subscriptions
-                for sub_id, subscription in matched_subscriptions:
+                matched = 0
+                for sub_id in self._matching(path):
+                    subscription = self._subscriptions.get(sub_id)
+                    if subscription is None:
+                        continue  # removed by an earlier callback of this message
+                    if subscription.full_message:
+                        if sub_id in full_done:
+                            continue
+                        full_done.add(sub_id)
+                    matched += 1
                     try:
-                        logger.debug(
-                            f"Triggering callback for subscription {sub_id} (pattern: {subscription.path_pattern}, path: {path})"
-                        )
+                        if debug:
+                            logger.debug(
+                                "Triggering callback for subscription %s (pattern: %s, path: %s)",
+                                sub_id,
+                                subscription.path_pattern,
+                                path,
+                            )
                         # Pass either the full message or just the specific data based on subscription setting
                         callback_data = message if subscription.full_message else data
                         subscription.callback(path, callback_data)
@@ -607,18 +649,17 @@ class DataEventManager:
                             f"Error in callback for subscription {sub_id}: {e}"
                         )
 
-                if matched_subscriptions:
-                    logger.debug(
-                        f"Path {path} matched {len(matched_subscriptions)} subscriptions"
-                    )
-                    total_matches += len(matched_subscriptions)
+                if matched and debug:
+                    logger.debug("Path %s matched %s subscriptions", path, matched)
+                total_matches += matched
 
-            if total_matches > 0:
-                logger.debug(
-                    f"Processed message with {total_matches} total subscription matches"
-                )
-            else:
-                logger.debug("No subscriptions matched any paths in message")
+            if debug:
+                if total_matches > 0:
+                    logger.debug(
+                        "Processed message with %s total subscription matches", total_matches
+                    )
+                else:
+                    logger.debug("No subscriptions matched any paths in message")
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
